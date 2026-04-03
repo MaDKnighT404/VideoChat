@@ -60,23 +60,30 @@ app.prepare().then(() => {
     socket.emit("rooms-update", getRoomsSummary());
 
     socket.on("join-room", ({ roomId, username }: { roomId: string; username: string }) => {
+      console.log(`[join-room] ${username} (${socket.id}) → room ${roomId}`);
       const room = rooms.find((r) => r.id === roomId);
-      if (!room) return;
+      if (!room) { console.log("[join-room] room not found"); return; }
       if (room.users.length >= 2) {
+        console.log("[join-room] room full");
         socket.emit("room-full", { roomId });
         return;
       }
-      if (room.users.some((u) => u.socketId === socket.id)) return;
+      if (room.users.some((u) => u.socketId === socket.id)) {
+        console.log("[join-room] user already in room");
+        return;
+      }
 
       removeUserFromAllRooms(socket.id, io);
       room.users.push({ socketId: socket.id, username });
       socket.join(`room-${roomId}`);
 
       io.emit("rooms-update", getRoomsSummary());
+      console.log(`[join-room] Room ${roomId} now has ${room.users.length} user(s):`, room.users.map(u => u.username));
 
       if (room.users.length === 2) {
         const otherUser = room.users.find((u) => u.socketId !== socket.id);
         if (otherUser) {
+          console.log(`[ready-to-call] Sending to ${socket.id} (initiator) and ${otherUser.socketId}`);
           socket.emit("ready-to-call", {
             roomId,
             initiator: true,
@@ -104,10 +111,12 @@ app.prepare().then(() => {
     });
 
     socket.on("offer", ({ roomId, offer }: { roomId: string; offer: RTCSessionDescriptionInit }) => {
+      console.log(`[offer] from ${socket.id} → room-${roomId}`);
       socket.to(`room-${roomId}`).emit("offer", { offer, from: socket.id });
     });
 
     socket.on("answer", ({ roomId, answer }: { roomId: string; answer: RTCSessionDescriptionInit }) => {
+      console.log(`[answer] from ${socket.id} → room-${roomId}`);
       socket.to(`room-${roomId}`).emit("answer", { answer, from: socket.id });
     });
 
