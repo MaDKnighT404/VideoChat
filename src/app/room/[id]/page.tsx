@@ -190,6 +190,82 @@ export default function RoomPage() {
       }
     }
 
+    function logPcState(label: string) {
+      const pc = pcRef.current;
+      if (!pc) { console.log(`[State] ${label}: PC is null`); return; }
+      console.log(`[State] ${label}:`, {
+        connection: pc.connectionState,
+        ice: pc.iceConnectionState,
+        signaling: pc.signalingState,
+        gathering: pc.iceGatheringState,
+      });
+    }
+
+    async function handleInitiator() {
+      const pc = createPeerConnection();
+      logPcState("After createPC (initiator)");
+
+      try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        logPcState("After setLocalDescription (offer)");
+
+        const sdp = pc.localDescription!.sdp;
+        console.log("[SDP] Offer has", (sdp.match(/a=candidate/g) || []).length, "embedded candidates");
+        console.log("[SDP] Offer m-lines:", (sdp.match(/^m=/gm) || []).length);
+
+        socket.emit("offer", {
+          roomId,
+          offer: { type: pc.localDescription!.type, sdp },
+        });
+        console.log("[Signal] Sent offer");
+      } catch (e) {
+        console.error("[WebRTC] Failed to create offer:", e);
+      }
+    }
+
+    async function handleOffer(offer: RTCSessionDescriptionInit) {
+      console.log("[Signal] Received offer");
+      const pc = createPeerConnection();
+      logPcState("After createPC (non-initiator)");
+
+      try {
+        await pc.setRemoteDescription(offer);
+        logPcState("After setRemoteDescription (offer)");
+        hasRemoteDesc.current = true;
+        await flushCandidates();
+
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        logPcState("After setLocalDescription (answer)");
+
+        const sdp = pc.localDescription!.sdp;
+        console.log("[SDP] Answer has", (sdp.match(/a=candidate/g) || []).length, "embedded candidates");
+
+        socket.emit("answer", {
+          roomId,
+          answer: { type: pc.localDescription!.type, sdp },
+        });
+        console.log("[Signal] Sent answer");
+      } catch (e) {
+        console.error("[WebRTC] Failed to handle offer:", e);
+      }
+    }
+
+    async function handleAnswer(answer: RTCSessionDescriptionInit) {
+      console.log("[Signal] Received answer");
+      const pc = pcRef.current;
+      if (!pc) { console.error("[WebRTC] No PC for answer!"); return; }
+      try {
+        await pc.setRemoteDescription(answer);
+        logPcState("After setRemoteDescription (answer)");
+        hasRemoteDesc.current = true;
+        await flushCandidates();
+      } catch (e) {
+        console.error("[WebRTC] Failed to handle answer:", e);
+      }
+    }
+
     async function init() {
       await startMedia();
 
@@ -207,60 +283,18 @@ export default function RoomPage() {
           setPartnerName(partner);
           setWaiting(false);
 
-          const pc = createPeerConnection();
-
           if (initiator) {
-            try {
-              const offer = await pc.createOffer();
-              await pc.setLocalDescription(offer);
-              const desc = pc.localDescription!;
-              socket.emit("offer", {
-                roomId,
-                offer: { type: desc.type, sdp: desc.sdp },
-              });
-              console.log("[Signal] Sent offer");
-            } catch (e) {
-              console.error("[WebRTC] Failed to create offer:", e);
-            }
+            await handleInitiator();
           }
         }
       );
 
       socket.on("offer", async ({ offer }: { offer: RTCSessionDescriptionInit }) => {
-        console.log("[Signal] Received offer");
-        let pc = pcRef.current;
-        if (!pc) {
-          pc = createPeerConnection();
-        }
-        try {
-          await pc.setRemoteDescription(offer);
-          hasRemoteDesc.current = true;
-          await flushCandidates();
-
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          const desc = pc.localDescription!;
-          socket.emit("answer", {
-            roomId,
-            answer: { type: desc.type, sdp: desc.sdp },
-          });
-          console.log("[Signal] Sent answer");
-        } catch (e) {
-          console.error("[WebRTC] Failed to handle offer:", e);
-        }
+        await handleOffer(offer);
       });
 
       socket.on("answer", async ({ answer }: { answer: RTCSessionDescriptionInit }) => {
-        console.log("[Signal] Received answer");
-        const pc = pcRef.current;
-        if (!pc) return;
-        try {
-          await pc.setRemoteDescription(answer);
-          hasRemoteDesc.current = true;
-          await flushCandidates();
-        } catch (e) {
-          console.error("[WebRTC] Failed to handle answer:", e);
-        }
+        await handleAnswer(answer);
       });
 
       socket.on("ice-candidate", async ({ candidate }: { candidate: RTCIceCandidateInit }) => {
@@ -296,9 +330,29 @@ export default function RoomPage() {
         }
       });
 
+      // Poll PC state every 3s for debugging
+      const pollInterval = setInterval(() => {
+        logPcState("Poll");
+      }, 3000);
+
       socket.emit("join-room", { roomId, username });
       console.log("[Signal] Emitted join-room for", roomId);
+
+      return pollInterval;
     }
+
+    const pollPromise = init();
+
+    return () => {
+      pollPromise.then((interval) => { if (interval) clearInterval(interval); });
+      socket.off("ready-to-call");
+      socket.off("offer");
+      socket.off("answer");
+      socket.off("ice-candidate");
+      socket.off("user-left");
+      socket.emit("leave-room", { roomId });
+      cleanup();
+    };
 
     init();
 
