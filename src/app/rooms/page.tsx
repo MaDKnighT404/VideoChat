@@ -39,11 +39,13 @@ export default function RoomsPage() {
     if (!username) return;
 
     const socket = getSocket();
-    socket.connect();
+    if (!socket.connected) socket.connect();
 
     socket.on("rooms-update", (data: RoomInfo[]) => {
       setRooms(data);
     });
+
+    socket.emit("get-rooms");
 
     return () => {
       socket.off("rooms-update");

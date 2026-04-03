@@ -59,6 +59,10 @@ app.prepare().then(() => {
 
     socket.emit("rooms-update", getRoomsSummary());
 
+    socket.on("get-rooms", () => {
+      socket.emit("rooms-update", getRoomsSummary());
+    });
+
     socket.on("join-room", ({ roomId, username }: { roomId: string; username: string }) => {
       console.log(`[join-room] ${username} (${socket.id}) → room ${roomId}`);
       const room = rooms.find((r) => r.id === roomId);
