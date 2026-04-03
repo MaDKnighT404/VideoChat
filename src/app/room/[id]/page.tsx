@@ -6,28 +6,29 @@ import { useUserStore } from "@/store/useUserStore";
 import { getSocket } from "@/lib/socket";
 
 const RTC_CONFIG: RTCConfiguration = {
-  iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun1.l.google.com:19302" },
-    { urls: "stun:stun2.l.google.com:19302" },
-    { urls: "stun:stun3.l.google.com:19302" },
-    {
-      urls: "turn:openrelay.metered.ca:80",
-      username: "openrelayproject",
-      credential: "openrelayproject",
-    },
-    {
-      urls: "turn:openrelay.metered.ca:443",
-      username: "openrelayproject",
-      credential: "openrelayproject",
-    },
-    {
-      urls: "turn:openrelay.metered.ca:443?transport=tcp",
-      username: "openrelayproject",
-      credential: "openrelayproject",
-    },
-  ],
+  iceServers: [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:stun1.l.google.com:19302" }],
 };
+
+function waitForGathering(pc: RTCPeerConnection): Promise<void> {
+  return new Promise((resolve) => {
+    if (pc.iceGatheringState === "complete") {
+      resolve();
+      return;
+    }
+    const check = () => {
+      if (pc.iceGatheringState === "complete") {
+        pc.removeEventListener("icegatheringstatechange", check);
+        resolve();
+      }
+    };
+    pc.addEventListener("icegatheringstatechange", check);
+    // Safety timeout — resolve after 5s even if not complete
+    setTimeout(() => {
+      pc.removeEventListener("icegatheringstatechange", check);
+      resolve();
+    }, 5000);
+  });
+}
 
 export default function RoomPage() {
   const router = useRouter();
@@ -48,8 +49,6 @@ export default function RoomPage() {
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
   const initRef = useRef(false);
-  const candidateBuffer = useRef<RTCIceCandidateInit[]>([]);
-  const hasRemoteDesc = useRef(false);
 
   useEffect(() => {
     hydrate();
@@ -72,8 +71,6 @@ export default function RoomPage() {
       localStreamRef.current = null;
     }
     remoteStreamRef.current = null;
-    hasRemoteDesc.current = false;
-    candidateBuffer.current = [];
   }, []);
 
   useEffect(() => {
@@ -87,11 +84,12 @@ export default function RoomPage() {
       if (pcRef.current) {
         pcRef.current.close();
       }
-      hasRemoteDesc.current = false;
-      candidateBuffer.current = [];
 
       const pc = new RTCPeerConnection(RTC_CONFIG);
       pcRef.current = pc;
+
+      // Data channel forces ICE candidate generation in all browsers
+      pc.createDataChannel("signal");
 
       if (localStreamRef.current) {
         const tracks = localStreamRef.current.getTracks();
@@ -102,7 +100,7 @@ export default function RoomPage() {
       }
 
       pc.ontrack = (event) => {
-        console.log("[WebRTC] ontrack fired, streams:", event.streams.length);
+        console.log("[WebRTC] ontrack fired");
         const stream = event.streams[0];
         if (stream) {
           remoteStreamRef.current = stream;
@@ -114,17 +112,7 @@ export default function RoomPage() {
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
-          try {
-            console.log("[WebRTC] Sending ICE candidate");
-            socket.emit("ice-candidate", {
-              roomId,
-              candidate: event.candidate.toJSON(),
-            });
-          } catch (e) {
-            console.error("[WebRTC] Error sending ICE candidate:", e);
-          }
-        } else {
-          console.log("[WebRTC] ICE gathering complete");
+          console.log("[WebRTC] ICE candidate gathered");
         }
       };
 
@@ -142,43 +130,22 @@ export default function RoomPage() {
 
       pc.oniceconnectionstatechange = () => {
         console.log("[WebRTC] iceConnectionState:", pc.iceConnectionState);
-      };
-
-      pc.onicegatheringstatechange = () => {
-        console.log("[WebRTC] iceGatheringState:", pc.iceGatheringState);
+        if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+          setConnected(true);
+          setWaiting(false);
+        }
       };
 
       return pc;
     }
 
-    async function flushCandidates() {
-      const pc = pcRef.current;
-      if (!pc || !hasRemoteDesc.current) return;
-      const buffered = [...candidateBuffer.current];
-      candidateBuffer.current = [];
-      console.log("[WebRTC] Flushing", buffered.length, "buffered candidates");
-      for (const c of buffered) {
-        try {
-          await pc.addIceCandidate(c);
-        } catch (e) {
-          console.warn("[WebRTC] Failed to add buffered candidate:", e);
-        }
-      }
-    }
-
     async function startMedia() {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: true,
-        });
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         localStreamRef.current = stream;
       } catch {
         try {
-          const stream = await navigator.mediaDevices.getUserMedia({
-            video: true,
-            audio: false,
-          });
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
           localStreamRef.current = stream;
         } catch {
           localStreamRef.current = new MediaStream();
@@ -187,82 +154,6 @@ export default function RoomPage() {
       console.log("[Media] Got tracks:", localStreamRef.current?.getTracks().length);
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = localStreamRef.current;
-      }
-    }
-
-    function logPcState(label: string) {
-      const pc = pcRef.current;
-      if (!pc) { console.log(`[State] ${label}: PC is null`); return; }
-      console.log(`[State] ${label}:`, {
-        connection: pc.connectionState,
-        ice: pc.iceConnectionState,
-        signaling: pc.signalingState,
-        gathering: pc.iceGatheringState,
-      });
-    }
-
-    async function handleInitiator() {
-      const pc = createPeerConnection();
-      logPcState("After createPC (initiator)");
-
-      try {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        logPcState("After setLocalDescription (offer)");
-
-        const sdp = pc.localDescription!.sdp;
-        console.log("[SDP] Offer has", (sdp.match(/a=candidate/g) || []).length, "embedded candidates");
-        console.log("[SDP] Offer m-lines:", (sdp.match(/^m=/gm) || []).length);
-
-        socket.emit("offer", {
-          roomId,
-          offer: { type: pc.localDescription!.type, sdp },
-        });
-        console.log("[Signal] Sent offer");
-      } catch (e) {
-        console.error("[WebRTC] Failed to create offer:", e);
-      }
-    }
-
-    async function handleOffer(offer: RTCSessionDescriptionInit) {
-      console.log("[Signal] Received offer");
-      const pc = createPeerConnection();
-      logPcState("After createPC (non-initiator)");
-
-      try {
-        await pc.setRemoteDescription(offer);
-        logPcState("After setRemoteDescription (offer)");
-        hasRemoteDesc.current = true;
-        await flushCandidates();
-
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        logPcState("After setLocalDescription (answer)");
-
-        const sdp = pc.localDescription!.sdp;
-        console.log("[SDP] Answer has", (sdp.match(/a=candidate/g) || []).length, "embedded candidates");
-
-        socket.emit("answer", {
-          roomId,
-          answer: { type: pc.localDescription!.type, sdp },
-        });
-        console.log("[Signal] Sent answer");
-      } catch (e) {
-        console.error("[WebRTC] Failed to handle offer:", e);
-      }
-    }
-
-    async function handleAnswer(answer: RTCSessionDescriptionInit) {
-      console.log("[Signal] Received answer");
-      const pc = pcRef.current;
-      if (!pc) { console.error("[WebRTC] No PC for answer!"); return; }
-      try {
-        await pc.setRemoteDescription(answer);
-        logPcState("After setRemoteDescription (answer)");
-        hasRemoteDesc.current = true;
-        await flushCandidates();
-      } catch (e) {
-        console.error("[WebRTC] Failed to handle answer:", e);
       }
     }
 
@@ -284,32 +175,82 @@ export default function RoomPage() {
           setWaiting(false);
 
           if (initiator) {
-            await handleInitiator();
+            const pc = createPeerConnection();
+            try {
+              const offer = await pc.createOffer();
+              await pc.setLocalDescription(offer);
+              console.log("[WebRTC] Waiting for ICE gathering...");
+              await waitForGathering(pc);
+              const desc = pc.localDescription!;
+              const candidateCount = (desc.sdp.match(/a=candidate/g) || []).length;
+              console.log("[WebRTC] Gathering done,", candidateCount, "candidates in SDP");
+              socket.emit("offer", {
+                roomId,
+                offer: { type: desc.type, sdp: desc.sdp },
+              });
+              console.log("[Signal] Sent offer with candidates");
+            } catch (e) {
+              console.error("[WebRTC] Failed to create offer:", e);
+            }
           }
         }
       );
 
       socket.on("offer", async ({ offer }: { offer: RTCSessionDescriptionInit }) => {
-        await handleOffer(offer);
+        console.log("[Signal] Received offer");
+        const pc = createPeerConnection();
+        try {
+          await pc.setRemoteDescription(offer);
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          console.log("[WebRTC] Waiting for ICE gathering...");
+          await waitForGathering(pc);
+          const desc = pc.localDescription!;
+          const candidateCount = (desc.sdp.match(/a=candidate/g) || []).length;
+          console.log("[WebRTC] Gathering done,", candidateCount, "candidates in SDP");
+          socket.emit("answer", {
+            roomId,
+            answer: { type: desc.type, sdp: desc.sdp },
+          });
+          console.log("[Signal] Sent answer with candidates");
+
+          console.log("[WebRTC] States after answer:", {
+            connection: pc.connectionState,
+            ice: pc.iceConnectionState,
+            signaling: pc.signalingState,
+          });
+        } catch (e) {
+          console.error("[WebRTC] Failed to handle offer:", e);
+        }
       });
 
       socket.on("answer", async ({ answer }: { answer: RTCSessionDescriptionInit }) => {
-        await handleAnswer(answer);
-      });
-
-      socket.on("ice-candidate", async ({ candidate }: { candidate: RTCIceCandidateInit }) => {
-        if (!hasRemoteDesc.current) {
-          console.log("[WebRTC] Buffering ICE candidate (no remote desc yet)");
-          candidateBuffer.current.push(candidate);
+        console.log("[Signal] Received answer");
+        const pc = pcRef.current;
+        if (!pc) {
+          console.error("[WebRTC] No PC for answer!");
           return;
         }
+        try {
+          await pc.setRemoteDescription(answer);
+          console.log("[WebRTC] States after remote answer:", {
+            connection: pc.connectionState,
+            ice: pc.iceConnectionState,
+            signaling: pc.signalingState,
+          });
+        } catch (e) {
+          console.error("[WebRTC] Failed to handle answer:", e);
+        }
+      });
+
+      // Keep trickle ICE as backup — relay any late candidates
+      socket.on("ice-candidate", async ({ candidate }: { candidate: RTCIceCandidateInit }) => {
         const pc = pcRef.current;
         if (!pc) return;
         try {
           await pc.addIceCandidate(candidate);
-          console.log("[WebRTC] Added remote ICE candidate");
-        } catch (e) {
-          console.warn("[WebRTC] Failed to add ICE candidate:", e);
+        } catch {
+          // ignore — vanilla ICE should handle it via SDP
         }
       });
 
@@ -323,36 +264,14 @@ export default function RoomPage() {
           pcRef.current = null;
         }
         remoteStreamRef.current = null;
-        hasRemoteDesc.current = false;
-        candidateBuffer.current = [];
         if (remoteVideoRef.current) {
           remoteVideoRef.current.srcObject = null;
         }
       });
 
-      // Poll PC state every 3s for debugging
-      const pollInterval = setInterval(() => {
-        logPcState("Poll");
-      }, 3000);
-
       socket.emit("join-room", { roomId, username });
       console.log("[Signal] Emitted join-room for", roomId);
-
-      return pollInterval;
     }
-
-    const pollPromise = init();
-
-    return () => {
-      pollPromise.then((interval) => { if (interval) clearInterval(interval); });
-      socket.off("ready-to-call");
-      socket.off("offer");
-      socket.off("answer");
-      socket.off("ice-candidate");
-      socket.off("user-left");
-      socket.emit("leave-room", { roomId });
-      cleanup();
-    };
 
     init();
 
@@ -367,7 +286,6 @@ export default function RoomPage() {
     };
   }, [hydrated, username, roomId, cleanup]);
 
-  // Keep remote video element in sync with stream
   useEffect(() => {
     if (remoteVideoRef.current && remoteStreamRef.current) {
       remoteVideoRef.current.srcObject = remoteStreamRef.current;
@@ -417,7 +335,12 @@ export default function RoomPage() {
               className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-600 transition-all hover:border-slate-500 hover:bg-slate-700"
             >
               <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M15 19l-7-7 7-7"
+                />
               </svg>
             </button>
             <div>
@@ -464,7 +387,6 @@ export default function RoomPage() {
           </div>
 
           <div className="relative overflow-hidden rounded-2xl border border-slate-700 bg-slate-800">
-            {/* Video element ALWAYS in DOM so ref is available for ontrack */}
             <video
               ref={remoteVideoRef}
               autoPlay
@@ -475,7 +397,12 @@ export default function RoomPage() {
               <div className="flex aspect-video items-center justify-center">
                 <div className="text-center">
                   <div className="mx-auto mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-slate-700">
-                    <svg className="h-10 w-10 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg
+                      className="h-10 w-10 text-slate-500"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
                       <path
                         strokeLinecap="round"
                         strokeLinejoin="round"
@@ -507,12 +434,27 @@ export default function RoomPage() {
           >
             {micOn ? (
               <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
+                />
               </svg>
             ) : (
               <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"
+                />
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2"
+                />
               </svg>
             )}
           </button>
@@ -525,11 +467,21 @@ export default function RoomPage() {
           >
             {camOn ? (
               <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
+                />
               </svg>
             ) : (
               <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
+                />
               </svg>
             )}
           </button>
@@ -539,7 +491,12 @@ export default function RoomPage() {
             className="flex h-14 w-14 items-center justify-center rounded-full bg-red-600 transition-all hover:bg-red-500"
           >
             <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z" />
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z"
+              />
             </svg>
           </button>
         </div>
