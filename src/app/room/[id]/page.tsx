@@ -4,10 +4,13 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { useUserStore } from "@/store/useUserStore";
 import { getSocket } from "@/lib/socket";
+import type { Socket } from "socket.io-client";
 
-const MEDIA_MIME = "video/webm;codecs=vp8,opus";
-const CHUNK_MS = 300;
-const VIDEO_BPS = 600_000;
+const SEND_W = 480;
+const SEND_H = 360;
+const FRAME_MS = 100;
+const JPEG_Q = 0.5;
+const AUDIO_BUF_SIZE = 4096;
 
 export default function RoomPage() {
   const router = useRouter();
@@ -21,15 +24,30 @@ export default function RoomPage() {
   const [waiting, setWaiting] = useState(true);
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
+  const [hasRemoteFrame, setHasRemoteFrame] = useState(false);
+
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selCam, setSelCam] = useState("");
+  const [selMic, setSelMic] = useState("");
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
-  const remoteVideoRef = useRef<HTMLVideoElement>(null);
-
+  const remoteImgRef = useRef<HTMLImageElement>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const sourceBufferRef = useRef<SourceBuffer | null>(null);
-  const chunkQueueRef = useRef<ArrayBuffer[]>([]);
-  const msUrlRef = useRef("");
+
+  const frameTimerRef = useRef(0);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const canvasCtxRef = useRef<CanvasRenderingContext2D | null>(null);
+
+  const captureCtxRef = useRef<AudioContext | null>(null);
+  const processorNodeRef = useRef<ScriptProcessorNode | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
+
+  const playCtxRef = useRef<AudioContext | null>(null);
+  const nextPlayRef = useRef(0);
+  const prevBlobUrlRef = useRef("");
+
+  const socketRef = useRef<Socket | null>(null);
+  const sendingRef = useRef(false);
   const initRef = useRef(false);
 
   useEffect(() => {
@@ -41,192 +59,305 @@ export default function RoomPage() {
     if (hydrated && !username) router.replace("/");
   }, [hydrated, username, router]);
 
-  const stopSending = useCallback(() => {
-    const r = recorderRef.current;
-    if (r && r.state !== "inactive") {
+  useEffect(() => {
+    navigator.mediaDevices.enumerateDevices().then((devs) => {
+      setDevices(devs);
+    });
+  }, []);
+
+  const getMedia = useCallback(
+    async (camId?: string, micId?: string) => {
+      const videoC: MediaTrackConstraints = {
+        width: { ideal: 640 },
+        height: { ideal: 480 },
+      };
+      if (camId) videoC.deviceId = { exact: camId };
+
+      const audioC: MediaTrackConstraints | boolean = micId
+        ? { deviceId: { exact: micId } }
+        : true;
+
       try {
-        r.stop();
+        return await navigator.mediaDevices.getUserMedia({
+          video: videoC,
+          audio: audioC,
+        });
       } catch {
-        /* already stopped */
+        try {
+          return await navigator.mediaDevices.getUserMedia({
+            video: videoC,
+            audio: false,
+          });
+        } catch {
+          return new MediaStream();
+        }
       }
+    },
+    [],
+  );
+
+  const stopVideoSending = useCallback(() => {
+    if (frameTimerRef.current) {
+      clearInterval(frameTimerRef.current);
+      frameTimerRef.current = 0;
     }
-    recorderRef.current = null;
+  }, []);
+
+  const stopAudioSending = useCallback(() => {
+    if (processorNodeRef.current) {
+      processorNodeRef.current.disconnect();
+      processorNodeRef.current = null;
+    }
+    if (gainNodeRef.current) {
+      gainNodeRef.current.disconnect();
+      gainNodeRef.current = null;
+    }
+    if (captureCtxRef.current) {
+      captureCtxRef.current.close().catch(() => {});
+      captureCtxRef.current = null;
+    }
   }, []);
 
   const stopReceiving = useCallback(() => {
-    sourceBufferRef.current = null;
-    chunkQueueRef.current = [];
-    const video = remoteVideoRef.current;
-    if (video) {
-      video.src = "";
-      video.load();
+    if (playCtxRef.current) {
+      playCtxRef.current.close().catch(() => {});
+      playCtxRef.current = null;
     }
-    if (msUrlRef.current) {
-      URL.revokeObjectURL(msUrlRef.current);
-      msUrlRef.current = "";
+    nextPlayRef.current = 0;
+    if (prevBlobUrlRef.current) {
+      URL.revokeObjectURL(prevBlobUrlRef.current);
+      prevBlobUrlRef.current = "";
     }
   }, []);
 
   const cleanup = useCallback(() => {
-    stopSending();
+    stopVideoSending();
+    stopAudioSending();
     stopReceiving();
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((t) => t.stop());
       localStreamRef.current = null;
     }
-  }, [stopSending, stopReceiving]);
+  }, [stopVideoSending, stopAudioSending, stopReceiving]);
+
+  const startVideoSending = useCallback(
+    (socket: Socket) => {
+      const video = localVideoRef.current;
+      if (!video) return;
+
+      if (!canvasRef.current) {
+        canvasRef.current = document.createElement("canvas");
+        canvasRef.current.width = SEND_W;
+        canvasRef.current.height = SEND_H;
+        canvasCtxRef.current = canvasRef.current.getContext("2d");
+      }
+
+      const cvs = canvasRef.current!;
+      const ctx = canvasCtxRef.current!;
+
+      stopVideoSending();
+      frameTimerRef.current = window.setInterval(() => {
+        if (video.readyState < 2) return;
+        ctx.drawImage(video, 0, 0, SEND_W, SEND_H);
+        cvs.toBlob(
+          (blob) => {
+            if (blob && blob.size > 0) {
+              blob.arrayBuffer().then((buf) => {
+                socket.emit("video-frame", { roomId, frame: buf });
+              });
+            }
+          },
+          "image/jpeg",
+          JPEG_Q,
+        );
+      }, FRAME_MS);
+    },
+    [roomId, stopVideoSending],
+  );
+
+  const startAudioSending = useCallback(
+    (socket: Socket) => {
+      const stream = localStreamRef.current;
+      if (!stream || stream.getAudioTracks().length === 0) {
+        console.log("[Audio] No audio tracks to send");
+        return;
+      }
+
+      stopAudioSending();
+
+      const actx = new AudioContext();
+      captureCtxRef.current = actx;
+
+      const source = actx.createMediaStreamSource(
+        new MediaStream(stream.getAudioTracks()),
+      );
+      const processor = actx.createScriptProcessor(AUDIO_BUF_SIZE, 1, 1);
+      processorNodeRef.current = processor;
+
+      const silentGain = actx.createGain();
+      silentGain.gain.value = 0;
+      gainNodeRef.current = silentGain;
+
+      source.connect(processor);
+      processor.connect(silentGain);
+      silentGain.connect(actx.destination);
+
+      const sr = actx.sampleRate;
+
+      processor.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0);
+        const int16 = new Int16Array(input.length);
+        for (let i = 0; i < input.length; i++) {
+          const s = Math.max(-1, Math.min(1, input[i]));
+          int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        }
+        socket.emit("audio-data", {
+          roomId,
+          audio: int16.buffer,
+          sampleRate: sr,
+        });
+      };
+      console.log("[Audio] Sending started, sampleRate:", sr);
+    },
+    [roomId, stopAudioSending],
+  );
 
   useEffect(() => {
     if (!hydrated || !username || initRef.current) return;
     initRef.current = true;
 
     const socket = getSocket();
+    socketRef.current = socket;
     if (!socket.connected) socket.connect();
 
-    function processQueue() {
-      const sb = sourceBufferRef.current;
-      const q = chunkQueueRef.current;
-      if (!sb || sb.updating || q.length === 0) return;
-      try {
-        sb.appendBuffer(q.shift()!);
-      } catch (e) {
-        console.error("[Receiver] appendBuffer error:", e);
-      }
-    }
-
-    function startSending() {
-      const stream = localStreamRef.current;
-      if (!stream || stream.getTracks().length === 0) {
-        console.warn("[Sender] No tracks to send");
-        return;
-      }
-
-      const mime = MediaRecorder.isTypeSupported(MEDIA_MIME) ? MEDIA_MIME : "video/webm";
-      console.log("[Sender] Starting MediaRecorder, mime:", mime);
-
-      const recorder = new MediaRecorder(stream, {
-        mimeType: mime,
-        videoBitsPerSecond: VIDEO_BPS,
-      });
-      recorderRef.current = recorder;
-
-      recorder.ondataavailable = async (e) => {
-        if (e.data.size > 0) {
-          const buf = await e.data.arrayBuffer();
-          socket.emit("media-chunk", { roomId, chunk: buf });
-        }
-      };
-      recorder.onerror = (e) => console.error("[Sender] recorder error:", e);
-      recorder.start(CHUNK_MS);
-    }
-
-    function startReceiving() {
-      const video = remoteVideoRef.current;
-      if (!video) {
-        console.error("[Receiver] No video element");
-        return;
-      }
-
-      const ms = new MediaSource();
-      const url = URL.createObjectURL(ms);
-      msUrlRef.current = url;
-      video.src = url;
-
-      ms.addEventListener("sourceopen", () => {
-        console.log("[Receiver] MediaSource opened");
-        const sbMime = MediaSource.isTypeSupported(MEDIA_MIME) ? MEDIA_MIME : "video/webm";
-        try {
-          const sb = ms.addSourceBuffer(sbMime);
-          sb.mode = "sequence";
-          sourceBufferRef.current = sb;
-
-          sb.addEventListener("updateend", () => {
-            processQueue();
-            try {
-              if (sb.buffered.length > 0) {
-                const end = sb.buffered.end(sb.buffered.length - 1);
-                const start = sb.buffered.start(0);
-                if (end - start > 30) {
-                  sb.remove(start, end - 15);
-                }
-              }
-            } catch {
-              /* non-critical */
-            }
-          });
-
-          processQueue();
-        } catch (e) {
-          console.error("[Receiver] addSourceBuffer error:", e);
-        }
-      });
-    }
-
-    function handleChunk(data: ArrayBuffer) {
-      chunkQueueRef.current.push(data);
-      processQueue();
-
-      const video = remoteVideoRef.current;
-      if (video && video.paused) {
-        video.play().catch(() => {});
-      }
-      if (video && video.buffered.length > 0) {
-        const end = video.buffered.end(video.buffered.length - 1);
-        if (end - video.currentTime > 2) {
-          video.currentTime = end - 0.3;
-        }
-      }
-    }
-
-    async function startMedia() {
-      try {
-        localStreamRef.current = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 640 }, height: { ideal: 480 } },
-          audio: true,
-        });
-      } catch {
-        try {
-          localStreamRef.current = await navigator.mediaDevices.getUserMedia({
-            video: { width: { ideal: 640 }, height: { ideal: 480 } },
-            audio: false,
-          });
-        } catch {
-          localStreamRef.current = new MediaStream();
-        }
-      }
-      console.log("[Media] tracks:", localStreamRef.current.getTracks().length);
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = localStreamRef.current;
-      }
-    }
+    const playCtx = new AudioContext();
+    playCtxRef.current = playCtx;
 
     async function init() {
-      await startMedia();
+      const stream = await getMedia();
+      localStreamRef.current = stream;
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+      }
+
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      setDevices(devs);
+
+      const audioTracks = stream.getAudioTracks();
+      const videoTracks = stream.getVideoTracks();
+      if (audioTracks.length > 0) {
+        const label = audioTracks[0].label;
+        const match = devs.find(
+          (d) => d.kind === "audioinput" && d.label === label,
+        );
+        if (match) setSelMic(match.deviceId);
+      }
+      if (videoTracks.length > 0) {
+        const label = videoTracks[0].label;
+        const match = devs.find(
+          (d) => d.kind === "videoinput" && d.label === label,
+        );
+        if (match) setSelCam(match.deviceId);
+      }
 
       socket.on(
         "ready-to-call",
-        ({ partnerName: partner }: { roomId: string; initiator: boolean; partnerName: string }) => {
+        ({
+          partnerName: partner,
+        }: {
+          roomId: string;
+          initiator: boolean;
+          partnerName: string;
+        }) => {
           console.log("[Signal] ready-to-call, partner:", partner);
           setPartnerName(partner);
           setWaiting(false);
           setConnected(true);
+          setHasRemoteFrame(false);
 
-          startReceiving();
-          startSending();
-        }
+          sendingRef.current = true;
+          startVideoSending(socket);
+          startAudioSending(socket);
+        },
       );
 
-      socket.on("media-chunk", (data: ArrayBuffer) => {
-        handleChunk(data);
+      socket.on("video-frame", (frame: ArrayBuffer) => {
+        const blob = new Blob([frame], { type: "image/jpeg" });
+        const url = URL.createObjectURL(blob);
+        const img = remoteImgRef.current;
+        if (img) {
+          img.src = url;
+        }
+        if (prevBlobUrlRef.current) {
+          URL.revokeObjectURL(prevBlobUrlRef.current);
+        }
+        prevBlobUrlRef.current = url;
+        setHasRemoteFrame(true);
       });
+
+      socket.on(
+        "audio-data",
+        ({
+          audio,
+          sampleRate,
+        }: {
+          audio: ArrayBuffer;
+          sampleRate: number;
+        }) => {
+          const ctx = playCtxRef.current;
+          if (!ctx) return;
+
+          if (ctx.state === "suspended") {
+            ctx.resume().catch(() => {});
+          }
+
+          let int16: Int16Array;
+          if (audio instanceof ArrayBuffer) {
+            int16 = new Int16Array(audio);
+          } else {
+            const u8 = audio as unknown as Uint8Array;
+            int16 = new Int16Array(
+              u8.buffer,
+              u8.byteOffset,
+              u8.byteLength / 2,
+            );
+          }
+
+          const float32 = new Float32Array(int16.length);
+          for (let i = 0; i < int16.length; i++) {
+            float32[i] = int16[i] / 32768;
+          }
+
+          const buf = ctx.createBuffer(1, float32.length, sampleRate);
+          buf.getChannelData(0).set(float32);
+
+          const src = ctx.createBufferSource();
+          src.buffer = buf;
+          src.connect(ctx.destination);
+
+          const now = ctx.currentTime;
+          let t = nextPlayRef.current;
+          if (t < now) t = now + 0.05;
+          if (t - now > 1.0) t = now + 0.05;
+
+          src.start(t);
+          nextPlayRef.current = t + buf.duration;
+        },
+      );
 
       socket.on("user-left", () => {
         console.log("[Signal] user-left");
         setConnected(false);
         setWaiting(true);
         setPartnerName("");
-        stopSending();
-        stopReceiving();
+        setHasRemoteFrame(false);
+        sendingRef.current = false;
+        stopVideoSending();
+        stopAudioSending();
+        if (prevBlobUrlRef.current) {
+          URL.revokeObjectURL(prevBlobUrlRef.current);
+          prevBlobUrlRef.current = "";
+        }
       });
 
       socket.emit("join-room", { roomId, username });
@@ -237,12 +368,42 @@ export default function RoomPage() {
 
     return () => {
       socket.off("ready-to-call");
-      socket.off("media-chunk");
+      socket.off("video-frame");
+      socket.off("audio-data");
       socket.off("user-left");
       socket.emit("leave-room", { roomId });
       cleanup();
     };
-  }, [hydrated, username, roomId, cleanup, stopSending, stopReceiving]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated, username, roomId]);
+
+  const switchDevice = useCallback(
+    async (kind: "cam" | "mic", deviceId: string) => {
+      if (kind === "cam") setSelCam(deviceId);
+      else setSelMic(deviceId);
+
+      const newCam = kind === "cam" ? deviceId : selCam;
+      const newMic = kind === "mic" ? deviceId : selMic;
+
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
+
+      const stream = await getMedia(newCam, newMic);
+      localStreamRef.current = stream;
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+      }
+
+      if (sendingRef.current && socketRef.current) {
+        stopVideoSending();
+        stopAudioSending();
+        startVideoSending(socketRef.current);
+        startAudioSending(socketRef.current);
+      }
+    },
+    [selCam, selMic, getMedia, stopVideoSending, stopAudioSending, startVideoSending, startAudioSending],
+  );
 
   const handleLeave = () => {
     const socket = getSocket();
@@ -256,7 +417,7 @@ export default function RoomPage() {
       localStreamRef.current.getAudioTracks().forEach((t) => {
         t.enabled = !t.enabled;
       });
-      setMicOn((prev) => !prev);
+      setMicOn((p) => !p);
     }
   };
 
@@ -265,9 +426,24 @@ export default function RoomPage() {
       localStreamRef.current.getVideoTracks().forEach((t) => {
         t.enabled = !t.enabled;
       });
-      setCamOn((prev) => !prev);
+      setCamOn((p) => !p);
     }
   };
+
+  useEffect(() => {
+    const resume = () => {
+      playCtxRef.current?.resume().catch(() => {});
+    };
+    document.addEventListener("click", resume, { once: true });
+    document.addEventListener("touchstart", resume, { once: true });
+    return () => {
+      document.removeEventListener("click", resume);
+      document.removeEventListener("touchstart", resume);
+    };
+  }, []);
+
+  const cameras = devices.filter((d) => d.kind === "videoinput");
+  const mics = devices.filter((d) => d.kind === "audioinput");
 
   if (!hydrated || !username) {
     return (
@@ -286,7 +462,12 @@ export default function RoomPage() {
               onClick={handleLeave}
               className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-600 transition-all hover:border-slate-500 hover:bg-slate-700"
             >
-              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg
+                className="h-5 w-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
@@ -297,7 +478,11 @@ export default function RoomPage() {
             </button>
             <div>
               <h1 className="text-lg font-bold">Комната {roomId}</h1>
-              {partnerName && <p className="text-xs text-slate-400">Собеседник: {partnerName}</p>}
+              {partnerName && (
+                <p className="text-xs text-slate-400">
+                  Собеседник: {partnerName}
+                </p>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -323,6 +508,40 @@ export default function RoomPage() {
         </div>
       </header>
 
+      {/* Device selectors */}
+      <div className="border-b border-slate-700 bg-slate-800/30 px-6 py-2">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-4 text-sm">
+          <label className="flex items-center gap-2">
+            <span className="text-slate-400">Камера:</span>
+            <select
+              value={selCam}
+              onChange={(e) => switchDevice("cam", e.target.value)}
+              className="rounded-lg border border-slate-600 bg-slate-700 px-2 py-1 text-sm text-white outline-none focus:border-blue-500"
+            >
+              {cameras.map((d) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {d.label || `Камера ${cameras.indexOf(d) + 1}`}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-2">
+            <span className="text-slate-400">Микрофон:</span>
+            <select
+              value={selMic}
+              onChange={(e) => switchDevice("mic", e.target.value)}
+              className="rounded-lg border border-slate-600 bg-slate-700 px-2 py-1 text-sm text-white outline-none focus:border-blue-500"
+            >
+              {mics.map((d) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {d.label || `Микрофон ${mics.indexOf(d) + 1}`}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </div>
+
       <main className="flex flex-1 flex-col items-center justify-center gap-6 p-6">
         <div className="grid w-full max-w-5xl gap-6 md:grid-cols-2">
           {/* Local video */}
@@ -339,16 +558,16 @@ export default function RoomPage() {
             </div>
           </div>
 
-          {/* Remote video */}
+          {/* Remote video (img-based for cross-platform) */}
           <div className="relative overflow-hidden rounded-2xl border border-slate-700 bg-slate-800 aspect-video">
-            <video
-              ref={remoteVideoRef}
-              autoPlay
-              playsInline
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              ref={remoteImgRef}
+              alt=""
               className="absolute inset-0 h-full w-full object-cover"
             />
-            {!connected && (
-              <div className="absolute inset-0 flex items-center justify-center bg-slate-800">
+            {(!connected || !hasRemoteFrame) && (
+              <div className="absolute inset-0 z-10 flex items-center justify-center bg-slate-800">
                 <div className="text-center">
                   <div className="mx-auto mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-slate-700">
                     <svg
@@ -366,12 +585,14 @@ export default function RoomPage() {
                     </svg>
                   </div>
                   <p className="text-sm text-slate-500">
-                    {waiting ? "Ожидание собеседника..." : "Подключение..."}
+                    {waiting
+                      ? "Ожидание собеседника..."
+                      : "Подключение..."}
                   </p>
                 </div>
               </div>
             )}
-            {partnerName && connected && (
+            {partnerName && connected && hasRemoteFrame && (
               <div className="absolute bottom-3 left-3 z-10 rounded-lg bg-black/60 px-3 py-1 text-sm backdrop-blur-sm">
                 {partnerName}
               </div>
@@ -384,11 +605,18 @@ export default function RoomPage() {
           <button
             onClick={toggleMic}
             className={`flex h-14 w-14 items-center justify-center rounded-full transition-all ${
-              micOn ? "bg-slate-700 hover:bg-slate-600" : "bg-red-600 hover:bg-red-500"
+              micOn
+                ? "bg-slate-700 hover:bg-slate-600"
+                : "bg-red-600 hover:bg-red-500"
             }`}
           >
             {micOn ? (
-              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg
+                className="h-6 w-6"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
@@ -397,7 +625,12 @@ export default function RoomPage() {
                 />
               </svg>
             ) : (
-              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg
+                className="h-6 w-6"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
@@ -417,11 +650,18 @@ export default function RoomPage() {
           <button
             onClick={toggleCam}
             className={`flex h-14 w-14 items-center justify-center rounded-full transition-all ${
-              camOn ? "bg-slate-700 hover:bg-slate-600" : "bg-red-600 hover:bg-red-500"
+              camOn
+                ? "bg-slate-700 hover:bg-slate-600"
+                : "bg-red-600 hover:bg-red-500"
             }`}
           >
             {camOn ? (
-              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg
+                className="h-6 w-6"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
@@ -430,7 +670,12 @@ export default function RoomPage() {
                 />
               </svg>
             ) : (
-              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg
+                className="h-6 w-6"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
@@ -445,7 +690,12 @@ export default function RoomPage() {
             onClick={handleLeave}
             className="flex h-14 w-14 items-center justify-center rounded-full bg-red-600 transition-all hover:bg-red-500"
           >
-            <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg
+              className="h-6 w-6"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"

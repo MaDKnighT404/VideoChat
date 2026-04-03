@@ -64,39 +64,44 @@ app.prepare().then(() => {
       socket.emit("rooms-update", getRoomsSummary());
     });
 
-    socket.on("join-room", ({ roomId, username }: { roomId: string; username: string }) => {
-      console.log(`[join-room] ${username} (${socket.id}) → room ${roomId}`);
-      const room = rooms.find((r) => r.id === roomId);
-      if (!room) return;
-      if (room.users.length >= 2) {
-        socket.emit("room-full", { roomId });
-        return;
-      }
-      if (room.users.some((u) => u.socketId === socket.id)) return;
-
-      removeUserFromAllRooms(socket.id, io);
-      room.users.push({ socketId: socket.id, username });
-      socket.join(`room-${roomId}`);
-
-      io.emit("rooms-update", getRoomsSummary());
-
-      if (room.users.length === 2) {
-        const otherUser = room.users.find((u) => u.socketId !== socket.id);
-        if (otherUser) {
-          console.log(`[ready-to-call] ${socket.id} <-> ${otherUser.socketId}`);
-          socket.emit("ready-to-call", {
-            roomId,
-            initiator: true,
-            partnerName: otherUser.username,
-          });
-          io.to(otherUser.socketId).emit("ready-to-call", {
-            roomId,
-            initiator: false,
-            partnerName: username,
-          });
+    socket.on(
+      "join-room",
+      ({ roomId, username }: { roomId: string; username: string }) => {
+        console.log(`[join-room] ${username} (${socket.id}) → room ${roomId}`);
+        const room = rooms.find((r) => r.id === roomId);
+        if (!room) return;
+        if (room.users.length >= 2) {
+          socket.emit("room-full", { roomId });
+          return;
         }
-      }
-    });
+        if (room.users.some((u) => u.socketId === socket.id)) return;
+
+        removeUserFromAllRooms(socket.id, io);
+        room.users.push({ socketId: socket.id, username });
+        socket.join(`room-${roomId}`);
+
+        io.emit("rooms-update", getRoomsSummary());
+
+        if (room.users.length === 2) {
+          const otherUser = room.users.find((u) => u.socketId !== socket.id);
+          if (otherUser) {
+            console.log(
+              `[ready-to-call] ${socket.id} <-> ${otherUser.socketId}`,
+            );
+            socket.emit("ready-to-call", {
+              roomId,
+              initiator: true,
+              partnerName: otherUser.username,
+            });
+            io.to(otherUser.socketId).emit("ready-to-call", {
+              roomId,
+              initiator: false,
+              partnerName: username,
+            });
+          }
+        }
+      },
+    );
 
     socket.on("leave-room", ({ roomId }: { roomId: string }) => {
       const room = rooms.find((r) => r.id === roomId);
@@ -110,9 +115,29 @@ app.prepare().then(() => {
       }
     });
 
-    socket.on("media-chunk", ({ roomId, chunk }: { roomId: string; chunk: Buffer }) => {
-      socket.to(`room-${roomId}`).emit("media-chunk", chunk);
-    });
+    socket.on(
+      "video-frame",
+      ({ roomId, frame }: { roomId: string; frame: Buffer }) => {
+        socket.to(`room-${roomId}`).emit("video-frame", frame);
+      },
+    );
+
+    socket.on(
+      "audio-data",
+      ({
+        roomId,
+        audio,
+        sampleRate,
+      }: {
+        roomId: string;
+        audio: Buffer;
+        sampleRate: number;
+      }) => {
+        socket
+          .to(`room-${roomId}`)
+          .emit("audio-data", { audio, sampleRate });
+      },
+    );
 
     socket.on("disconnect", () => {
       console.log("Disconnected:", socket.id);
