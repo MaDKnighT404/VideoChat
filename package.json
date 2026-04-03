@@ -3,17 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "dev:server": "tsx --watch server/index.ts",
+    "dev": "tsx server.ts",
     "build": "next build",
-    "start": "next start",
+    "start": "cross-env NODE_ENV=production tsx server.ts",
     "lint": "eslint"
   },
   "dependencies": {
+    "cross-env": "^10.1.0",
     "next": "16.2.2",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
+    "tsx": "^4.21.0",
     "zustand": "^5.0.12"
   },
   "devDependencies": {
@@ -24,7 +26,6 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.2",
     "tailwindcss": "^4",
-    "tsx": "^4.21.0",
     "typescript": "^5"
   }
 }
