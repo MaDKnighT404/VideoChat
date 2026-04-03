@@ -5,30 +5,9 @@ import { useRouter, useParams } from "next/navigation";
 import { useUserStore } from "@/store/useUserStore";
 import { getSocket } from "@/lib/socket";
 
-const RTC_CONFIG: RTCConfiguration = {
-  iceServers: [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:stun1.l.google.com:19302" }],
-};
-
-function waitForGathering(pc: RTCPeerConnection): Promise<void> {
-  return new Promise((resolve) => {
-    if (pc.iceGatheringState === "complete") {
-      resolve();
-      return;
-    }
-    const check = () => {
-      if (pc.iceGatheringState === "complete") {
-        pc.removeEventListener("icegatheringstatechange", check);
-        resolve();
-      }
-    };
-    pc.addEventListener("icegatheringstatechange", check);
-    // Safety timeout — resolve after 5s even if not complete
-    setTimeout(() => {
-      pc.removeEventListener("icegatheringstatechange", check);
-      resolve();
-    }, 5000);
-  });
-}
+const MEDIA_MIME = "video/webm;codecs=vp8,opus";
+const CHUNK_MS = 300;
+const VIDEO_BPS = 600_000;
 
 export default function RoomPage() {
   const router = useRouter();
@@ -45,9 +24,12 @@ export default function RoomPage() {
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
-  const pcRef = useRef<RTCPeerConnection | null>(null);
+
   const localStreamRef = useRef<MediaStream | null>(null);
-  const remoteStreamRef = useRef<MediaStream | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const sourceBufferRef = useRef<SourceBuffer | null>(null);
+  const chunkQueueRef = useRef<ArrayBuffer[]>([]);
+  const msUrlRef = useRef("");
   const initRef = useRef(false);
 
   useEffect(() => {
@@ -56,22 +38,43 @@ export default function RoomPage() {
   }, [hydrate]);
 
   useEffect(() => {
-    if (hydrated && !username) {
-      router.replace("/");
-    }
+    if (hydrated && !username) router.replace("/");
   }, [hydrated, username, router]);
 
-  const cleanup = useCallback(() => {
-    if (pcRef.current) {
-      pcRef.current.close();
-      pcRef.current = null;
+  const stopSending = useCallback(() => {
+    const r = recorderRef.current;
+    if (r && r.state !== "inactive") {
+      try {
+        r.stop();
+      } catch {
+        /* already stopped */
+      }
     }
+    recorderRef.current = null;
+  }, []);
+
+  const stopReceiving = useCallback(() => {
+    sourceBufferRef.current = null;
+    chunkQueueRef.current = [];
+    const video = remoteVideoRef.current;
+    if (video) {
+      video.src = "";
+      video.load();
+    }
+    if (msUrlRef.current) {
+      URL.revokeObjectURL(msUrlRef.current);
+      msUrlRef.current = "";
+    }
+  }, []);
+
+  const cleanup = useCallback(() => {
+    stopSending();
+    stopReceiving();
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((t) => t.stop());
       localStreamRef.current = null;
     }
-    remoteStreamRef.current = null;
-  }, []);
+  }, [stopSending, stopReceiving]);
 
   useEffect(() => {
     if (!hydrated || !username || initRef.current) return;
@@ -80,78 +83,118 @@ export default function RoomPage() {
     const socket = getSocket();
     if (!socket.connected) socket.connect();
 
-    function createPeerConnection(): RTCPeerConnection {
-      if (pcRef.current) {
-        pcRef.current.close();
+    function processQueue() {
+      const sb = sourceBufferRef.current;
+      const q = chunkQueueRef.current;
+      if (!sb || sb.updating || q.length === 0) return;
+      try {
+        sb.appendBuffer(q.shift()!);
+      } catch (e) {
+        console.error("[Receiver] appendBuffer error:", e);
+      }
+    }
+
+    function startSending() {
+      const stream = localStreamRef.current;
+      if (!stream || stream.getTracks().length === 0) {
+        console.warn("[Sender] No tracks to send");
+        return;
       }
 
-      const pc = new RTCPeerConnection(RTC_CONFIG);
-      pcRef.current = pc;
+      const mime = MediaRecorder.isTypeSupported(MEDIA_MIME) ? MEDIA_MIME : "video/webm";
+      console.log("[Sender] Starting MediaRecorder, mime:", mime);
 
-      // Data channel forces ICE candidate generation in all browsers
-      pc.createDataChannel("signal");
+      const recorder = new MediaRecorder(stream, {
+        mimeType: mime,
+        videoBitsPerSecond: VIDEO_BPS,
+      });
+      recorderRef.current = recorder;
 
-      if (localStreamRef.current) {
-        const tracks = localStreamRef.current.getTracks();
-        console.log("[WebRTC] Adding", tracks.length, "tracks to PC");
-        tracks.forEach((track) => {
-          pc.addTrack(track, localStreamRef.current!);
-        });
+      recorder.ondataavailable = async (e) => {
+        if (e.data.size > 0) {
+          const buf = await e.data.arrayBuffer();
+          socket.emit("media-chunk", { roomId, chunk: buf });
+        }
+      };
+      recorder.onerror = (e) => console.error("[Sender] recorder error:", e);
+      recorder.start(CHUNK_MS);
+    }
+
+    function startReceiving() {
+      const video = remoteVideoRef.current;
+      if (!video) {
+        console.error("[Receiver] No video element");
+        return;
       }
 
-      pc.ontrack = (event) => {
-        console.log("[WebRTC] ontrack fired");
-        const stream = event.streams[0];
-        if (stream) {
-          remoteStreamRef.current = stream;
-          if (remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = stream;
-          }
-        }
-      };
+      const ms = new MediaSource();
+      const url = URL.createObjectURL(ms);
+      msUrlRef.current = url;
+      video.src = url;
 
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          console.log("[WebRTC] ICE candidate gathered");
-        }
-      };
+      ms.addEventListener("sourceopen", () => {
+        console.log("[Receiver] MediaSource opened");
+        const sbMime = MediaSource.isTypeSupported(MEDIA_MIME) ? MEDIA_MIME : "video/webm";
+        try {
+          const sb = ms.addSourceBuffer(sbMime);
+          sb.mode = "sequence";
+          sourceBufferRef.current = sb;
 
-      pc.onconnectionstatechange = () => {
-        const state = pc.connectionState;
-        console.log("[WebRTC] connectionState:", state);
-        if (state === "connected") {
-          setConnected(true);
-          setWaiting(false);
-        }
-        if (state === "disconnected" || state === "failed" || state === "closed") {
-          setConnected(false);
-        }
-      };
+          sb.addEventListener("updateend", () => {
+            processQueue();
+            try {
+              if (sb.buffered.length > 0) {
+                const end = sb.buffered.end(sb.buffered.length - 1);
+                const start = sb.buffered.start(0);
+                if (end - start > 30) {
+                  sb.remove(start, end - 15);
+                }
+              }
+            } catch {
+              /* non-critical */
+            }
+          });
 
-      pc.oniceconnectionstatechange = () => {
-        console.log("[WebRTC] iceConnectionState:", pc.iceConnectionState);
-        if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
-          setConnected(true);
-          setWaiting(false);
+          processQueue();
+        } catch (e) {
+          console.error("[Receiver] addSourceBuffer error:", e);
         }
-      };
+      });
+    }
 
-      return pc;
+    function handleChunk(data: ArrayBuffer) {
+      chunkQueueRef.current.push(data);
+      processQueue();
+
+      const video = remoteVideoRef.current;
+      if (video && video.paused) {
+        video.play().catch(() => {});
+      }
+      if (video && video.buffered.length > 0) {
+        const end = video.buffered.end(video.buffered.length - 1);
+        if (end - video.currentTime > 2) {
+          video.currentTime = end - 0.3;
+        }
+      }
     }
 
     async function startMedia() {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        localStreamRef.current = stream;
+        localStreamRef.current = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: true,
+        });
       } catch {
         try {
-          const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-          localStreamRef.current = stream;
+          localStreamRef.current = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 640 }, height: { ideal: 480 } },
+            audio: false,
+          });
         } catch {
           localStreamRef.current = new MediaStream();
         }
       }
-      console.log("[Media] Got tracks:", localStreamRef.current?.getTracks().length);
+      console.log("[Media] tracks:", localStreamRef.current.getTracks().length);
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = localStreamRef.current;
       }
@@ -162,96 +205,19 @@ export default function RoomPage() {
 
       socket.on(
         "ready-to-call",
-        async ({
-          initiator,
-          partnerName: partner,
-        }: {
-          roomId: string;
-          initiator: boolean;
-          partnerName: string;
-        }) => {
-          console.log("[Signal] ready-to-call, initiator:", initiator, "partner:", partner);
+        ({ partnerName: partner }: { roomId: string; initiator: boolean; partnerName: string }) => {
+          console.log("[Signal] ready-to-call, partner:", partner);
           setPartnerName(partner);
           setWaiting(false);
+          setConnected(true);
 
-          if (initiator) {
-            const pc = createPeerConnection();
-            try {
-              const offer = await pc.createOffer();
-              await pc.setLocalDescription(offer);
-              console.log("[WebRTC] Waiting for ICE gathering...");
-              await waitForGathering(pc);
-              const desc = pc.localDescription!;
-              const candidateCount = (desc.sdp.match(/a=candidate/g) || []).length;
-              console.log("[WebRTC] Gathering done,", candidateCount, "candidates in SDP");
-              socket.emit("offer", {
-                roomId,
-                offer: { type: desc.type, sdp: desc.sdp },
-              });
-              console.log("[Signal] Sent offer with candidates");
-            } catch (e) {
-              console.error("[WebRTC] Failed to create offer:", e);
-            }
-          }
+          startReceiving();
+          startSending();
         }
       );
 
-      socket.on("offer", async ({ offer }: { offer: RTCSessionDescriptionInit }) => {
-        console.log("[Signal] Received offer");
-        const pc = createPeerConnection();
-        try {
-          await pc.setRemoteDescription(offer);
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          console.log("[WebRTC] Waiting for ICE gathering...");
-          await waitForGathering(pc);
-          const desc = pc.localDescription!;
-          const candidateCount = (desc.sdp.match(/a=candidate/g) || []).length;
-          console.log("[WebRTC] Gathering done,", candidateCount, "candidates in SDP");
-          socket.emit("answer", {
-            roomId,
-            answer: { type: desc.type, sdp: desc.sdp },
-          });
-          console.log("[Signal] Sent answer with candidates");
-
-          console.log("[WebRTC] States after answer:", {
-            connection: pc.connectionState,
-            ice: pc.iceConnectionState,
-            signaling: pc.signalingState,
-          });
-        } catch (e) {
-          console.error("[WebRTC] Failed to handle offer:", e);
-        }
-      });
-
-      socket.on("answer", async ({ answer }: { answer: RTCSessionDescriptionInit }) => {
-        console.log("[Signal] Received answer");
-        const pc = pcRef.current;
-        if (!pc) {
-          console.error("[WebRTC] No PC for answer!");
-          return;
-        }
-        try {
-          await pc.setRemoteDescription(answer);
-          console.log("[WebRTC] States after remote answer:", {
-            connection: pc.connectionState,
-            ice: pc.iceConnectionState,
-            signaling: pc.signalingState,
-          });
-        } catch (e) {
-          console.error("[WebRTC] Failed to handle answer:", e);
-        }
-      });
-
-      // Keep trickle ICE as backup — relay any late candidates
-      socket.on("ice-candidate", async ({ candidate }: { candidate: RTCIceCandidateInit }) => {
-        const pc = pcRef.current;
-        if (!pc) return;
-        try {
-          await pc.addIceCandidate(candidate);
-        } catch {
-          // ignore — vanilla ICE should handle it via SDP
-        }
+      socket.on("media-chunk", (data: ArrayBuffer) => {
+        handleChunk(data);
       });
 
       socket.on("user-left", () => {
@@ -259,14 +225,8 @@ export default function RoomPage() {
         setConnected(false);
         setWaiting(true);
         setPartnerName("");
-        if (pcRef.current) {
-          pcRef.current.close();
-          pcRef.current = null;
-        }
-        remoteStreamRef.current = null;
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = null;
-        }
+        stopSending();
+        stopReceiving();
       });
 
       socket.emit("join-room", { roomId, username });
@@ -277,20 +237,12 @@ export default function RoomPage() {
 
     return () => {
       socket.off("ready-to-call");
-      socket.off("offer");
-      socket.off("answer");
-      socket.off("ice-candidate");
+      socket.off("media-chunk");
       socket.off("user-left");
       socket.emit("leave-room", { roomId });
       cleanup();
     };
-  }, [hydrated, username, roomId, cleanup]);
-
-  useEffect(() => {
-    if (remoteVideoRef.current && remoteStreamRef.current) {
-      remoteVideoRef.current.srcObject = remoteStreamRef.current;
-    }
-  });
+  }, [hydrated, username, roomId, cleanup, stopSending, stopReceiving]);
 
   const handleLeave = () => {
     const socket = getSocket();
@@ -373,6 +325,7 @@ export default function RoomPage() {
 
       <main className="flex flex-1 flex-col items-center justify-center gap-6 p-6">
         <div className="grid w-full max-w-5xl gap-6 md:grid-cols-2">
+          {/* Local video */}
           <div className="relative overflow-hidden rounded-2xl border border-slate-700 bg-slate-800">
             <video
               ref={localVideoRef}
@@ -386,15 +339,16 @@ export default function RoomPage() {
             </div>
           </div>
 
-          <div className="relative overflow-hidden rounded-2xl border border-slate-700 bg-slate-800">
+          {/* Remote video */}
+          <div className="relative overflow-hidden rounded-2xl border border-slate-700 bg-slate-800 aspect-video">
             <video
               ref={remoteVideoRef}
               autoPlay
               playsInline
-              className={`aspect-video w-full object-cover ${connected ? "" : "hidden"}`}
+              className="absolute inset-0 h-full w-full object-cover"
             />
             {!connected && (
-              <div className="flex aspect-video items-center justify-center">
+              <div className="absolute inset-0 flex items-center justify-center bg-slate-800">
                 <div className="text-center">
                   <div className="mx-auto mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-slate-700">
                     <svg
@@ -418,13 +372,14 @@ export default function RoomPage() {
               </div>
             )}
             {partnerName && connected && (
-              <div className="absolute bottom-3 left-3 rounded-lg bg-black/60 px-3 py-1 text-sm backdrop-blur-sm">
+              <div className="absolute bottom-3 left-3 z-10 rounded-lg bg-black/60 px-3 py-1 text-sm backdrop-blur-sm">
                 {partnerName}
               </div>
             )}
           </div>
         </div>
 
+        {/* Controls */}
         <div className="flex items-center gap-4">
           <button
             onClick={toggleMic}
