@@ -46,6 +46,7 @@ export default function RoomPage() {
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
   const initRef = useRef(false);
   const candidateBuffer = useRef<RTCIceCandidateInit[]>([]);
   const hasRemoteDesc = useRef(false);
@@ -70,6 +71,7 @@ export default function RoomPage() {
       localStreamRef.current.getTracks().forEach((t) => t.stop());
       localStreamRef.current = null;
     }
+    remoteStreamRef.current = null;
     hasRemoteDesc.current = false;
     candidateBuffer.current = [];
   }, []);
@@ -92,28 +94,35 @@ export default function RoomPage() {
       pcRef.current = pc;
 
       if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((track) => {
+        const tracks = localStreamRef.current.getTracks();
+        console.log("[WebRTC] Adding", tracks.length, "tracks to PC");
+        tracks.forEach((track) => {
           pc.addTrack(track, localStreamRef.current!);
         });
       }
 
       pc.ontrack = (event) => {
-        if (remoteVideoRef.current && event.streams[0]) {
-          remoteVideoRef.current.srcObject = event.streams[0];
+        console.log("[WebRTC] ontrack fired, streams:", event.streams.length);
+        const stream = event.streams[0];
+        if (stream) {
+          remoteStreamRef.current = stream;
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = stream;
+          }
         }
       };
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
-          console.log(
-            "[WebRTC] Sending ICE candidate:",
-            event.candidate.type,
-            event.candidate.protocol
-          );
-          socket.emit("ice-candidate", {
-            roomId,
-            candidate: event.candidate.toJSON(),
-          });
+          try {
+            console.log("[WebRTC] Sending ICE candidate");
+            socket.emit("ice-candidate", {
+              roomId,
+              candidate: event.candidate.toJSON(),
+            });
+          } catch (e) {
+            console.error("[WebRTC] Error sending ICE candidate:", e);
+          }
         } else {
           console.log("[WebRTC] ICE gathering complete");
         }
@@ -135,20 +144,26 @@ export default function RoomPage() {
         console.log("[WebRTC] iceConnectionState:", pc.iceConnectionState);
       };
 
+      pc.onicegatheringstatechange = () => {
+        console.log("[WebRTC] iceGatheringState:", pc.iceGatheringState);
+      };
+
       return pc;
     }
 
     async function flushCandidates() {
       const pc = pcRef.current;
       if (!pc || !hasRemoteDesc.current) return;
-      for (const c of candidateBuffer.current) {
+      const buffered = [...candidateBuffer.current];
+      candidateBuffer.current = [];
+      console.log("[WebRTC] Flushing", buffered.length, "buffered candidates");
+      for (const c of buffered) {
         try {
-          await pc.addIceCandidate(new RTCIceCandidate(c));
+          await pc.addIceCandidate(c);
         } catch (e) {
           console.warn("[WebRTC] Failed to add buffered candidate:", e);
         }
       }
-      candidateBuffer.current = [];
     }
 
     async function startMedia() {
@@ -169,6 +184,7 @@ export default function RoomPage() {
           localStreamRef.current = new MediaStream();
         }
       }
+      console.log("[Media] Got tracks:", localStreamRef.current?.getTracks().length);
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = localStreamRef.current;
       }
@@ -198,7 +214,10 @@ export default function RoomPage() {
               const offer = await pc.createOffer();
               await pc.setLocalDescription(offer);
               const desc = pc.localDescription!;
-              socket.emit("offer", { roomId, offer: { type: desc.type, sdp: desc.sdp } });
+              socket.emit("offer", {
+                roomId,
+                offer: { type: desc.type, sdp: desc.sdp },
+              });
               console.log("[Signal] Sent offer");
             } catch (e) {
               console.error("[WebRTC] Failed to create offer:", e);
@@ -208,7 +227,7 @@ export default function RoomPage() {
       );
 
       socket.on("offer", async ({ offer }: { offer: RTCSessionDescriptionInit }) => {
-        console.log("[Signal] Received offer, type:", offer.type);
+        console.log("[Signal] Received offer");
         let pc = pcRef.current;
         if (!pc) {
           pc = createPeerConnection();
@@ -221,7 +240,10 @@ export default function RoomPage() {
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
           const desc = pc.localDescription!;
-          socket.emit("answer", { roomId, answer: { type: desc.type, sdp: desc.sdp } });
+          socket.emit("answer", {
+            roomId,
+            answer: { type: desc.type, sdp: desc.sdp },
+          });
           console.log("[Signal] Sent answer");
         } catch (e) {
           console.error("[WebRTC] Failed to handle offer:", e);
@@ -229,7 +251,7 @@ export default function RoomPage() {
       });
 
       socket.on("answer", async ({ answer }: { answer: RTCSessionDescriptionInit }) => {
-        console.log("[Signal] Received answer, type:", answer.type);
+        console.log("[Signal] Received answer");
         const pc = pcRef.current;
         if (!pc) return;
         try {
@@ -242,8 +264,8 @@ export default function RoomPage() {
       });
 
       socket.on("ice-candidate", async ({ candidate }: { candidate: RTCIceCandidateInit }) => {
-        console.log("[WebRTC] ICE candidate received, buffered:", !hasRemoteDesc.current);
         if (!hasRemoteDesc.current) {
+          console.log("[WebRTC] Buffering ICE candidate (no remote desc yet)");
           candidateBuffer.current.push(candidate);
           return;
         }
@@ -251,6 +273,7 @@ export default function RoomPage() {
         if (!pc) return;
         try {
           await pc.addIceCandidate(candidate);
+          console.log("[WebRTC] Added remote ICE candidate");
         } catch (e) {
           console.warn("[WebRTC] Failed to add ICE candidate:", e);
         }
@@ -265,6 +288,7 @@ export default function RoomPage() {
           pcRef.current.close();
           pcRef.current = null;
         }
+        remoteStreamRef.current = null;
         hasRemoteDesc.current = false;
         candidateBuffer.current = [];
         if (remoteVideoRef.current) {
@@ -272,7 +296,6 @@ export default function RoomPage() {
         }
       });
 
-      // Register listeners FIRST, then join room
       socket.emit("join-room", { roomId, username });
       console.log("[Signal] Emitted join-room for", roomId);
     }
@@ -289,6 +312,13 @@ export default function RoomPage() {
       cleanup();
     };
   }, [hydrated, username, roomId, cleanup]);
+
+  // Keep remote video element in sync with stream
+  useEffect(() => {
+    if (remoteVideoRef.current && remoteStreamRef.current) {
+      remoteVideoRef.current.srcObject = remoteStreamRef.current;
+    }
+  });
 
   const handleLeave = () => {
     const socket = getSocket();
@@ -333,12 +363,7 @@ export default function RoomPage() {
               className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-600 transition-all hover:border-slate-500 hover:bg-slate-700"
             >
               <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M15 19l-7-7 7-7"
-                />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
               </svg>
             </button>
             <div>
@@ -385,23 +410,18 @@ export default function RoomPage() {
           </div>
 
           <div className="relative overflow-hidden rounded-2xl border border-slate-700 bg-slate-800">
-            {connected ? (
-              <video
-                ref={remoteVideoRef}
-                autoPlay
-                playsInline
-                className="aspect-video w-full object-cover"
-              />
-            ) : (
+            {/* Video element ALWAYS in DOM so ref is available for ontrack */}
+            <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              className={`aspect-video w-full object-cover ${connected ? "" : "hidden"}`}
+            />
+            {!connected && (
               <div className="flex aspect-video items-center justify-center">
                 <div className="text-center">
                   <div className="mx-auto mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-slate-700">
-                    <svg
-                      className="h-10 w-10 text-slate-500"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
+                    <svg className="h-10 w-10 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path
                         strokeLinecap="round"
                         strokeLinejoin="round"
@@ -433,27 +453,12 @@ export default function RoomPage() {
           >
             {micOn ? (
               <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
-                />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
               </svg>
             ) : (
               <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"
-                />
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2"
-                />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
               </svg>
             )}
           </button>
@@ -466,21 +471,11 @@ export default function RoomPage() {
           >
             {camOn ? (
               <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
-                />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
               </svg>
             ) : (
               <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
-                />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
               </svg>
             )}
           </button>
@@ -490,12 +485,7 @@ export default function RoomPage() {
             className="flex h-14 w-14 items-center justify-center rounded-full bg-red-600 transition-all hover:bg-red-500"
           >
             <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z"
-              />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z" />
             </svg>
           </button>
         </div>
