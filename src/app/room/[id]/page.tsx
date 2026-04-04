@@ -6,10 +6,10 @@ import { useUserStore } from "@/store/useUserStore";
 import { getSocket } from "@/lib/socket";
 import type { Socket } from "socket.io-client";
 
-const SEND_W = 480;
-const SEND_H = 360;
+const SEND_W = 1280;
+const SEND_H = 720;
 const FRAME_MS = 100;
-const JPEG_Q = 0.5;
+const JPEG_Q = 0.6;
 const AUDIO_BUF_SIZE = 4096;
 
 export default function RoomPage() {
@@ -32,6 +32,7 @@ export default function RoomPage() {
   const [selMic, setSelMic] = useState("");
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
+  const localDisplayRef = useRef<HTMLVideoElement>(null);
   const remoteImgRef = useRef<HTMLImageElement>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
 
@@ -68,8 +69,8 @@ export default function RoomPage() {
 
   const getMedia = useCallback(async (camId?: string, micId?: string) => {
     const videoC: MediaTrackConstraints = {
-      width: { ideal: 640 },
-      height: { ideal: 480 },
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
     };
     if (camId) videoC.deviceId = { exact: camId };
 
@@ -138,9 +139,6 @@ export default function RoomPage() {
 
   const startVideoSending = useCallback(
     (socket: Socket) => {
-      const video = localVideoRef.current;
-      if (!video) return;
-
       if (!canvasRef.current) {
         canvasRef.current = document.createElement("canvas");
         canvasRef.current.width = SEND_W;
@@ -153,7 +151,8 @@ export default function RoomPage() {
 
       stopVideoSending();
       frameTimerRef.current = window.setInterval(() => {
-        if (video.readyState < 2) return;
+        const video = localVideoRef.current;
+        if (!video || video.readyState < 2) return;
         ctx.drawImage(video, 0, 0, SEND_W, SEND_H);
         cvs.toBlob(
           (blob) => {
@@ -230,9 +229,8 @@ export default function RoomPage() {
     async function init() {
       const stream = await getMedia();
       localStreamRef.current = stream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-      }
+      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+      if (localDisplayRef.current) localDisplayRef.current.srcObject = stream;
 
       const devs = await navigator.mediaDevices.enumerateDevices();
       setDevices(devs);
@@ -367,9 +365,8 @@ export default function RoomPage() {
 
       const stream = await getMedia(newCam, newMic);
       localStreamRef.current = stream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-      }
+      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+      if (localDisplayRef.current) localDisplayRef.current.srcObject = stream;
 
       if (sendingRef.current && socketRef.current) {
         stopVideoSending();
@@ -432,9 +429,9 @@ export default function RoomPage() {
   const inCall = connected;
 
   useEffect(() => {
-    const el = localVideoRef.current;
-    const stream = localStreamRef.current;
-    if (el && stream) el.srcObject = stream;
+    if (!inCall && localDisplayRef.current && localStreamRef.current) {
+      localDisplayRef.current.srcObject = localStreamRef.current;
+    }
   }, [inCall]);
 
   const deviceSelectorsEl = (
@@ -611,6 +608,15 @@ export default function RoomPage() {
         </div>
       )}
 
+      {/* Always-mounted hidden video for capture (never unmounts, so startVideoSending always has a valid element) */}
+      <video
+        ref={localVideoRef}
+        autoPlay
+        playsInline
+        muted
+        style={{ position: 'fixed', top: '-9999px', left: '-9999px', width: '1px', height: '1px' }}
+      />
+
       <main
         className={
           inCall
@@ -661,7 +667,7 @@ export default function RoomPage() {
                   </div>
                 </div>
               )}
-              {partnerName && connected && hasRemoteFrame && !remoteUiOpen && (
+              {partnerName && hasRemoteFrame && !remoteUiOpen && (
                 <div className="pointer-events-none absolute bottom-4 left-4 z-10 rounded-lg bg-black/60 px-3 py-1 text-sm backdrop-blur-sm">
                   {partnerName}
                 </div>
@@ -691,30 +697,13 @@ export default function RoomPage() {
                 </div>
               </>
             )}
-
-            <div
-              className="absolute bottom-4 right-4 z-30 w-44 overflow-hidden rounded-xl border border-slate-600 bg-slate-800 shadow-xl sm:w-52"
-              onClick={(e) => e.stopPropagation()}
-              onPointerDown={(e) => e.stopPropagation()}
-            >
-              <video
-                ref={localVideoRef}
-                autoPlay
-                playsInline
-                muted
-                className="aspect-video w-full object-cover"
-              />
-              <div className="absolute bottom-2 left-2 rounded-md bg-black/60 px-2 py-0.5 text-xs backdrop-blur-sm">
-                {username}
-              </div>
-            </div>
           </>
         ) : (
           <>
             <div className="grid w-full max-w-5xl gap-6 md:grid-cols-2">
               <div className="relative overflow-hidden rounded-2xl border border-slate-700 bg-slate-800">
                 <video
-                  ref={localVideoRef}
+                  ref={localDisplayRef}
                   autoPlay
                   playsInline
                   muted
