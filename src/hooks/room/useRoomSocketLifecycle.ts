@@ -3,7 +3,15 @@
 import { useEffect, useRef, type MutableRefObject, type RefObject } from "react";
 import { getSocket } from "@/lib/socket";
 import { acquireRoomMediaStream } from "@/lib/media/acquireRoomMediaStream";
-import type { ReadyToCallPayload } from "@/types/videochat";
+import { reconcileDeviceStoreWithDevices } from "@/lib/reconcileDeviceIds";
+import { useDeviceStore } from "@/store/useDeviceStore";
+import type {
+  RoomCategory,
+  RoomInfoPayload,
+  ReadyToCallPayload,
+  ParticipantsUpdatePayload,
+  RoomParticipant,
+} from "@/types/videochat";
 import type { StoredUser } from "@/store/useUserStore";
 import type { Socket } from "socket.io-client";
 
@@ -37,6 +45,8 @@ interface UseRoomSocketLifecycleArgs {
   setWaiting: (v: boolean) => void;
   setConnected: (v: boolean) => void;
   setRemoteUiOpen: (v: boolean | ((p: boolean) => boolean)) => void;
+  setCategory: (c: RoomCategory) => void;
+  setParticipants: (p: RoomParticipant[]) => void;
   socketRef: MutableRefObject<Socket | null>;
   sendingRef: MutableRefObject<boolean>;
   cleanupSession: () => void;
@@ -56,6 +66,8 @@ export function useRoomSocketLifecycle({
   setWaiting,
   setConnected,
   setRemoteUiOpen,
+  setCategory,
+  setParticipants,
   socketRef,
   sendingRef,
   cleanupSession,
@@ -74,38 +86,92 @@ export function useRoomSocketLifecycle({
     remotePlayback.ensurePlayContext();
 
     async function init() {
-      const stream = await acquireRoomMediaStream();
+      socket.emit("get-room-info", { roomId });
+      const info = await new Promise<RoomInfoPayload>((resolve) => {
+        socket.once("room-info", resolve);
+      });
+
+      const category = info.category;
+      setCategory(category);
+
+      const isVideoRoom = category === "video-audio";
+      const isGroupRoom = category === "group-audio";
+      const audioOnly = !isVideoRoom;
+
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      reconcileDeviceStoreWithDevices(devs);
+      const prefs = useDeviceStore.getState();
+      const stream = await acquireRoomMediaStream(
+        audioOnly ? undefined : prefs.camId || undefined,
+        prefs.micId || undefined,
+        audioOnly,
+        prefs.videoQuality,
+      );
       local.attachStreamToElements(stream);
       await local.syncDeviceIdsFromStream(stream);
 
-      socket.on("ready-to-call", ({ partnerName: partner }: ReadyToCallPayload) => {
-        console.log("[Signal] ready-to-call, partner:", partner);
-        setPartnerName(partner);
-        setWaiting(false);
+      if (isGroupRoom) {
         setConnected(true);
-        remotePlayback.softResetRemoteFrame();
-        setRemoteUiOpen(false);
+        setWaiting(true);
 
-        sendingRef.current = true;
-        startVideoSending(socket);
-        startAudioSending(socket);
-      });
+        socket.on(
+          "participants-update",
+          ({ participants }: ParticipantsUpdatePayload) => {
+            setParticipants(participants);
+            const others = participants.filter((p) => p.id !== me.id);
 
-      socket.on("video-frame", remotePlayback.handleVideoFrame);
+            if (others.length > 0 && !sendingRef.current) {
+              sendingRef.current = true;
+              startAudioSending(socket);
+              setWaiting(false);
+            } else if (others.length === 0 && sendingRef.current) {
+              sendingRef.current = false;
+              stopAudioSending();
+              setWaiting(true);
+            } else if (others.length > 0) {
+              setWaiting(false);
+            }
+          },
+        );
+      } else {
+        socket.on(
+          "ready-to-call",
+          ({ partnerName: partner }: ReadyToCallPayload) => {
+            console.log("[Signal] ready-to-call, partner:", partner);
+            setPartnerName(partner);
+            setWaiting(false);
+            setConnected(true);
+            remotePlayback.softResetRemoteFrame();
+            setRemoteUiOpen(false);
+
+            sendingRef.current = true;
+            if (isVideoRoom) {
+              startVideoSending(socket);
+            }
+            startAudioSending(socket);
+          },
+        );
+
+        if (isVideoRoom) {
+          socket.on("video-frame", remotePlayback.handleVideoFrame);
+        }
+
+        socket.on("user-left", () => {
+          console.log("[Signal] user-left");
+          setConnected(false);
+          setWaiting(true);
+          setPartnerName("");
+          remotePlayback.clearRemoteVideo();
+          setRemoteUiOpen(false);
+          sendingRef.current = false;
+          if (isVideoRoom) {
+            stopVideoSending();
+          }
+          stopAudioSending();
+        });
+      }
 
       socket.on("audio-data", remotePlayback.handleAudioData);
-
-      socket.on("user-left", () => {
-        console.log("[Signal] user-left");
-        setConnected(false);
-        setWaiting(true);
-        setPartnerName("");
-        remotePlayback.clearRemoteVideo();
-        setRemoteUiOpen(false);
-        sendingRef.current = false;
-        stopVideoSending();
-        stopAudioSending();
-      });
 
       socket.emit("join-room", {
         roomId,
@@ -123,6 +189,7 @@ export function useRoomSocketLifecycle({
       socket.off("video-frame", remotePlayback.handleVideoFrame);
       socket.off("audio-data", remotePlayback.handleAudioData);
       socket.off("user-left");
+      socket.off("participants-update");
       socket.emit("leave-room", { roomId });
       cleanupSession();
     };

@@ -1,6 +1,8 @@
 "use client";
 
 import { useRef, useState, useCallback, useEffect } from "react";
+import { reconcileDeviceStoreWithDevices } from "@/lib/reconcileDeviceIds";
+import { useDeviceStore } from "@/store/useDeviceStore";
 
 export function useLocalRoomMedia(inCall: boolean) {
   const [micOn, setMicOn] = useState(true);
@@ -14,7 +16,18 @@ export function useLocalRoomMedia(inCall: boolean) {
   const localStreamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
-    navigator.mediaDevices.enumerateDevices().then(setDevices);
+    const run = async () => {
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      reconcileDeviceStoreWithDevices(devs);
+      setDevices(devs);
+      const p = useDeviceStore.getState();
+      setSelCam(p.camId);
+      setSelMic(p.micId);
+    };
+    void run();
+    const onDeviceChange = () => void run();
+    navigator.mediaDevices.addEventListener("devicechange", onDeviceChange);
+    return () => navigator.mediaDevices.removeEventListener("devicechange", onDeviceChange);
   }, []);
 
   const attachStreamToElements = useCallback((stream: MediaStream) => {
@@ -27,17 +40,24 @@ export function useLocalRoomMedia(inCall: boolean) {
     const devs = await navigator.mediaDevices.enumerateDevices();
     setDevices(devs);
 
+    const store = useDeviceStore.getState();
     const audioTracks = stream.getAudioTracks();
     const videoTracks = stream.getVideoTracks();
     if (audioTracks.length > 0) {
       const label = audioTracks[0].label;
       const match = devs.find((d) => d.kind === "audioinput" && d.label === label);
-      if (match) setSelMic(match.deviceId);
+      if (match) {
+        setSelMic(match.deviceId);
+        if (!store.micId) store.setMicId(match.deviceId);
+      }
     }
     if (videoTracks.length > 0) {
       const label = videoTracks[0].label;
       const match = devs.find((d) => d.kind === "videoinput" && d.label === label);
-      if (match) setSelCam(match.deviceId);
+      if (match) {
+        setSelCam(match.deviceId);
+        if (!store.camId) store.setCamId(match.deviceId);
+      }
     }
   }, []);
 

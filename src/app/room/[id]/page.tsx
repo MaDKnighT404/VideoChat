@@ -11,6 +11,8 @@ import { CallControls } from "@/components/room/CallControls";
 import { HiddenCaptureVideo } from "@/components/room/HiddenCaptureVideo";
 import { RoomLobby } from "@/components/room/RoomLobby";
 import { RoomCallStage } from "@/components/room/RoomCallStage";
+import { AudioCallStage } from "@/components/room/AudioCallStage";
+import { GroupAudioStage } from "@/components/room/GroupAudioStage";
 
 export default function RoomPage() {
   const router = useRouter();
@@ -30,6 +32,9 @@ export default function RoomPage() {
   const session = useRoomSession({ roomId, user, hydrated, router });
 
   const {
+    category,
+    hasVideo,
+    isGroup,
     partnerName,
     connected,
     waiting,
@@ -38,6 +43,7 @@ export default function RoomPage() {
     hasRemoteFrame,
     remoteUiOpen,
     setRemoteUiOpen,
+    participants,
     cameras,
     mics,
     selCam,
@@ -47,12 +53,18 @@ export default function RoomPage() {
     localDisplayRef,
     remoteImgRef,
     switchDevice,
+    switchQuality,
+    videoQuality,
     handleLeave,
     toggleMic,
     toggleCam,
   } = session;
 
   if (!hydrated || !username) {
+    return <LoadingScreen />;
+  }
+
+  if (!category) {
     return <LoadingScreen />;
   }
 
@@ -63,6 +75,9 @@ export default function RoomPage() {
       selCam={selCam}
       selMic={selMic}
       onSwitch={switchDevice}
+      showCamera={hasVideo}
+      videoQuality={hasVideo ? videoQuality : undefined}
+      onQualityChange={hasVideo ? switchQuality : undefined}
     />
   );
 
@@ -73,33 +88,26 @@ export default function RoomPage() {
       onToggleMic={toggleMic}
       onToggleCam={toggleCam}
       onLeave={handleLeave}
+      showCamToggle={hasVideo}
     />
   );
 
-  return (
-    <div className="flex flex-1 flex-col">
-      <RoomHeader
-        roomId={roomId}
-        partnerName={partnerName}
-        connected={connected}
-        waiting={waiting}
-        onBack={handleLeave}
-      />
+  function renderMain() {
+    if (isGroup) {
+      return (
+        <GroupAudioStage
+          userId={user!.id}
+          participants={participants}
+          waiting={waiting}
+          callControls={callControls}
+          deviceSelectors={deviceSelectors}
+        />
+      );
+    }
 
-      {!inCall && (
-        <div className="border-b border-slate-700 bg-slate-800/30 px-6 py-2">{deviceSelectors}</div>
-      )}
-
-      <HiddenCaptureVideo videoRef={localVideoRef} />
-
-      <main
-        className={
-          inCall
-            ? "relative min-h-0 flex-1 overflow-hidden bg-black"
-            : "flex flex-1 flex-col items-center justify-center gap-6 p-6"
-        }
-      >
-        {inCall ? (
+    if (inCall) {
+      if (hasVideo) {
+        return (
           <RoomCallStage
             partnerName={partnerName}
             waiting={waiting}
@@ -110,18 +118,56 @@ export default function RoomPage() {
             deviceSelectors={deviceSelectors}
             callControls={callControls}
           />
-        ) : (
-          <RoomLobby
-            username={username}
-            partnerName={partnerName}
-            connected={connected}
-            waiting={waiting}
-            hasRemoteFrame={hasRemoteFrame}
-            localDisplayRef={localDisplayRef}
-            remoteImgRef={remoteImgRef}
-            callControls={callControls}
-          />
-        )}
+        );
+      }
+      return (
+        <AudioCallStage
+          partnerName={partnerName}
+          callControls={callControls}
+          deviceSelectors={deviceSelectors}
+        />
+      );
+    }
+
+    return (
+      <RoomLobby
+        username={username}
+        partnerName={partnerName}
+        connected={connected}
+        waiting={waiting}
+        hasRemoteFrame={hasRemoteFrame}
+        hasVideo={hasVideo}
+        localDisplayRef={localDisplayRef}
+        remoteImgRef={remoteImgRef}
+        callControls={callControls}
+      />
+    );
+  }
+
+  const isFullscreenVideo = inCall && hasVideo && !isGroup;
+
+  return (
+    <div className="flex flex-1 flex-col">
+      <RoomHeader
+        roomId={roomId}
+        partnerName={partnerName}
+        connected={connected}
+        waiting={waiting}
+        isGroup={isGroup}
+        participants={participants}
+        onBack={handleLeave}
+      />
+
+      {hasVideo && <HiddenCaptureVideo videoRef={localVideoRef} />}
+
+      <main
+        className={
+          isFullscreenVideo
+            ? "relative min-h-0 flex-1 overflow-hidden bg-black"
+            : "flex flex-1 flex-col items-center justify-center gap-6 p-6"
+        }
+      >
+        {renderMain()}
       </main>
     </div>
   );

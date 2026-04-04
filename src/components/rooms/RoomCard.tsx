@@ -1,31 +1,39 @@
 import type { RoomInfo } from "@/types/videochat";
 import { getRoomStatusLabel } from "@/lib/roomListStatus";
+import { CATEGORY_VISUAL } from "@/lib/categoryRoomStyle";
 
 interface RoomCardProps {
   room: RoomInfo;
   onJoin: (roomId: string) => void;
 }
 
-function ParticipantNames({ users }: { users: RoomInfo["users"] }) {
+function ParticipantNames({ users, max }: { users: RoomInfo["users"]; max: number }) {
   if (users.length === 0) return null;
+  const shown = users.slice(0, 3);
+  const rest = users.length - shown.length;
   return (
     <span className="text-slate-300">
-      {users.map((u, i) => (
+      {shown.map((u, i) => (
         <span key={u.id}>
-          {i > 0 && (users.length === 2 && i === 1 ? " и " : ", ")}
+          {i > 0 && ", "}
           {u.username}
         </span>
       ))}
+      {rest > 0 && <span className="text-slate-500"> +{rest}</span>}
     </span>
   );
 }
 
 export function RoomCard({ room, onJoin }: RoomCardProps) {
-  const status = getRoomStatusLabel(room.userCount);
-  const isFull = room.userCount >= 2;
+  const v = CATEGORY_VISUAL[room.category];
+  const status = getRoomStatusLabel(room.userCount, room.maxUsers);
+  const isFull = room.userCount >= room.maxUsers;
+  const fillPercent = room.maxUsers > 0 ? (room.userCount / room.maxUsers) * 100 : 0;
 
   return (
-    <div className="group rounded-2xl border border-slate-700 bg-slate-800/50 p-6 backdrop-blur-sm transition-all hover:border-slate-600 hover:bg-slate-800/80">
+    <div
+      className={`group rounded-2xl border p-6 backdrop-blur-sm transition-all ${v.cardBorder} ${v.cardBorderHover} ${v.cardBg} hover:shadow-lg`}
+    >
       <div className="mb-4 flex items-center justify-between">
         <h3 className="text-lg font-semibold">{room.name}</h3>
         <div className="flex items-center gap-2">
@@ -35,25 +43,23 @@ export function RoomCard({ room, onJoin }: RoomCardProps) {
       </div>
 
       <div className="mb-6 text-sm text-slate-400">
-        {room.userCount === 0 && "Нет участников"}
-        {room.userCount >= 1 && (
+        {room.userCount === 0 ? (
+          "Нет участников"
+        ) : (
           <span>
-            В комнате: <ParticipantNames users={room.users} />
+            В комнате: <ParticipantNames users={room.users} max={room.maxUsers} />
           </span>
         )}
       </div>
 
       <div className="flex items-center gap-2">
-        <span className="text-xs text-slate-500">{room.userCount}/2</span>
-        <div className="h-1.5 flex-1 rounded-full bg-slate-700">
+        <span className="text-xs text-slate-500">
+          {room.userCount}/{room.maxUsers}
+        </span>
+        <div className="h-1.5 flex-1 rounded-full bg-slate-700/80">
           <div
-            className={`h-full rounded-full transition-all ${
-              room.userCount === 0
-                ? "w-0"
-                : room.userCount === 1
-                  ? "w-1/2 bg-amber-500"
-                  : "w-full bg-red-500"
-            }`}
+            className={`h-full rounded-full transition-all ${v.progressFill}`}
+            style={{ width: `${fillPercent}%` }}
           />
         </div>
       </div>
@@ -62,7 +68,7 @@ export function RoomCard({ room, onJoin }: RoomCardProps) {
         type="button"
         onClick={() => onJoin(room.id)}
         disabled={isFull}
-        className="mt-4 w-full rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold transition-all hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-30"
+        className={`mt-4 w-full rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition-all disabled:cursor-not-allowed disabled:opacity-30 ${v.btn} ${v.btnHover}`}
       >
         {isFull ? "Комната занята" : "Присоединиться"}
       </button>

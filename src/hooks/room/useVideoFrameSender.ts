@@ -1,14 +1,14 @@
 "use client";
 
 import { useRef, useCallback, useMemo, type RefObject } from "react";
-import { FRAME_MS, MAX_SEND_DIM } from "@/constants/media";
+import { FRAME_MS, QUALITY_PRESETS, type VideoQuality } from "@/constants/media";
+import { useDeviceStore } from "@/store/useDeviceStore";
 import type { Socket } from "socket.io-client";
 
 export function useVideoFrameSender(
   roomId: string,
   localVideoRef: RefObject<HTMLVideoElement | null>
 ) {
-  const jpegQRef = useRef(0.85);
   const frameTimerRef = useRef(0);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const canvasCtxRef = useRef<CanvasRenderingContext2D | null>(null);
@@ -37,11 +37,13 @@ export function useVideoFrameSender(
         const video = localVideoRef.current;
         if (!video || video.readyState < 2) return;
 
+        const preset = QUALITY_PRESETS[useDeviceStore.getState().videoQuality];
+
         const vw = video.videoWidth;
         const vh = video.videoHeight;
         if (vw === 0 || vh === 0) return;
 
-        const scale = Math.min(1, MAX_SEND_DIM / Math.max(vw, vh));
+        const scale = Math.min(1, preset.maxSendDim / Math.max(vw, vh));
         const cw = Math.round(vw * scale);
         const ch = Math.round(vh * scale);
 
@@ -62,12 +64,12 @@ export function useVideoFrameSender(
             }
           },
           "image/jpeg",
-          jpegQRef.current
+          preset.jpegQuality,
         );
       }, FRAME_MS);
     },
     [roomId, localVideoRef, stop]
   );
 
-  return useMemo(() => ({ start, stop, jpegQRef }), [start, stop, jpegQRef]);
+  return useMemo(() => ({ start, stop }), [start, stop]);
 }

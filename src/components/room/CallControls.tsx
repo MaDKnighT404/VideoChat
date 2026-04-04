@@ -4,6 +4,7 @@ interface CallControlsProps {
   onToggleMic: () => void;
   onToggleCam: () => void;
   onLeave: () => void;
+  showCamToggle?: boolean;
 }
 
 export function CallControls({
@@ -12,6 +13,7 @@ export function CallControls({
   onToggleMic,
   onToggleCam,
   onLeave,
+  showCamToggle = true,
 }: CallControlsProps) {
   return (
     <div className="flex items-center gap-4">
@@ -49,33 +51,35 @@ export function CallControls({
         )}
       </button>
 
-      <button
-        type="button"
-        onClick={onToggleCam}
-        className={`flex h-14 w-14 items-center justify-center rounded-full transition-all ${
-          camOn ? "bg-slate-700 hover:bg-slate-600" : "bg-red-600 hover:bg-red-500"
-        }`}
-      >
-        {camOn ? (
-          <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
-            />
-          </svg>
-        ) : (
-          <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
-            />
-          </svg>
-        )}
-      </button>
+      {showCamToggle && (
+        <button
+          type="button"
+          onClick={onToggleCam}
+          className={`flex h-14 w-14 items-center justify-center rounded-full transition-all ${
+            camOn ? "bg-slate-700 hover:bg-slate-600" : "bg-red-600 hover:bg-red-500"
+          }`}
+        >
+          {camOn ? (
+            <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
+              />
+            </svg>
+          ) : (
+            <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
+              />
+            </svg>
+          )}
+        </button>
+      )}
 
       <button
         type="button"

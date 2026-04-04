@@ -1,8 +1,12 @@
+import type { RoomParticipant } from "@/types/videochat";
+
 interface RoomHeaderProps {
   roomId: string;
   partnerName: string;
   connected: boolean;
   waiting: boolean;
+  isGroup: boolean;
+  participants: RoomParticipant[];
   onBack: () => void;
 }
 
@@ -11,6 +15,8 @@ export function RoomHeader({
   partnerName,
   connected,
   waiting,
+  isGroup,
+  participants,
   onBack,
 }: RoomHeaderProps) {
   return (
@@ -33,11 +39,19 @@ export function RoomHeader({
           </button>
           <div>
             <h1 className="text-lg font-bold">Комната {roomId}</h1>
-            {partnerName && <p className="text-xs text-slate-400">Собеседник: {partnerName}</p>}
+            {isGroup ? (
+              <p className="text-xs text-slate-400">
+                Участников: {participants.length}
+              </p>
+            ) : (
+              partnerName && (
+                <p className="text-xs text-slate-400">Собеседник: {partnerName}</p>
+              )
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {connected && (
+          {connected && !waiting && (
             <span className="flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-400">
               <span className="h-2 w-2 rounded-full bg-emerald-500" />
               Подключено
