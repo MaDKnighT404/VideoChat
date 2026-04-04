@@ -6,10 +6,8 @@ import { useUserStore } from "@/store/useUserStore";
 import { getSocket } from "@/lib/socket";
 import type { Socket } from "socket.io-client";
 
-const SEND_W = 1280;
-const SEND_H = 720;
+const MAX_SEND_DIM = 1080;
 const FRAME_MS = 100;
-const JPEG_Q = 0.6;
 const AUDIO_BUF_SIZE = 4096;
 
 export default function RoomPage() {
@@ -30,6 +28,8 @@ export default function RoomPage() {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [selCam, setSelCam] = useState("");
   const [selMic, setSelMic] = useState("");
+  const [jpegQ, setJpegQ] = useState(0.85);
+  const jpegQRef = useRef(0.85);
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const localDisplayRef = useRef<HTMLVideoElement>(null);
@@ -141,19 +141,35 @@ export default function RoomPage() {
     (socket: Socket) => {
       if (!canvasRef.current) {
         canvasRef.current = document.createElement("canvas");
-        canvasRef.current.width = SEND_W;
-        canvasRef.current.height = SEND_H;
         canvasCtxRef.current = canvasRef.current.getContext("2d");
       }
 
       const cvs = canvasRef.current!;
       const ctx = canvasCtxRef.current!;
+      let prevCW = 0;
+      let prevCH = 0;
 
       stopVideoSending();
       frameTimerRef.current = window.setInterval(() => {
         const video = localVideoRef.current;
         if (!video || video.readyState < 2) return;
-        ctx.drawImage(video, 0, 0, SEND_W, SEND_H);
+
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        if (vw === 0 || vh === 0) return;
+
+        const scale = Math.min(1, MAX_SEND_DIM / Math.max(vw, vh));
+        const cw = Math.round(vw * scale);
+        const ch = Math.round(vh * scale);
+
+        if (cw !== prevCW || ch !== prevCH) {
+          cvs.width = cw;
+          cvs.height = ch;
+          prevCW = cw;
+          prevCH = ch;
+        }
+
+        ctx.drawImage(video, 0, 0, cw, ch);
         cvs.toBlob(
           (blob) => {
             if (blob && blob.size > 0) {
@@ -163,7 +179,7 @@ export default function RoomPage() {
             }
           },
           "image/jpeg",
-          JPEG_Q
+          jpegQRef.current
         );
       }, FRAME_MS);
     },
@@ -434,6 +450,11 @@ export default function RoomPage() {
     }
   }, [inCall]);
 
+  const handleQualityChange = useCallback((val: number) => {
+    setJpegQ(val);
+    jpegQRef.current = val;
+  }, []);
+
   const deviceSelectorsEl = (
     <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-4 text-sm">
       <label className="flex items-center gap-2">
@@ -463,6 +484,19 @@ export default function RoomPage() {
             </option>
           ))}
         </select>
+      </label>
+      <label className="flex items-center gap-2">
+        <span className="text-slate-400">Качество:</span>
+        <input
+          type="range"
+          min={0.3}
+          max={1}
+          step={0.05}
+          value={jpegQ}
+          onChange={(e) => handleQualityChange(Number(e.target.value))}
+          className="h-1.5 w-24 cursor-pointer accent-blue-500"
+        />
+        <span className="w-10 text-slate-300">{Math.round(jpegQ * 100)}%</span>
       </label>
     </div>
   );
