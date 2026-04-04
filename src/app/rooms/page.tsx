@@ -11,7 +11,10 @@ import { RoomCard } from "@/components/rooms/RoomCard";
 
 export default function RoomsPage() {
   const router = useRouter();
-  const { username, logout, hydrate } = useUserStore();
+  const user = useUserStore((s) => s.user);
+  const logout = useUserStore((s) => s.logout);
+  const hydrate = useUserStore((s) => s.hydrate);
+  const username = user?.username ?? "";
   const [rooms, setRooms] = useState<RoomInfo[]>([]);
   const [hydrated, setHydrated] = useState(false);
 
@@ -41,7 +44,7 @@ export default function RoomsPage() {
     return () => {
       socket.off("rooms-update");
     };
-  }, [username]);
+  }, [user?.id, username]);
 
   const handleJoin = (roomId: string) => {
     const room = rooms.find((r) => r.id === roomId);

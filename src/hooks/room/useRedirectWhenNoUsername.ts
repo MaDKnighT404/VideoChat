@@ -1,14 +1,15 @@
 "use client";
 
 import { useEffect } from "react";
+import type { StoredUser } from "@/store/useUserStore";
 import type { RoomSessionRouter } from "./types";
 
 export function useRedirectWhenNoUsername(
   hydrated: boolean,
-  username: string,
+  user: StoredUser | null,
   router: RoomSessionRouter
 ) {
   useEffect(() => {
-    if (hydrated && !username) router.replace("/");
-  }, [hydrated, username, router]);
+    if (hydrated && !user?.username) router.replace("/");
+  }, [hydrated, user, router]);
 }

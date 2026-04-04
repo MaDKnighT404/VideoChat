@@ -16,7 +16,9 @@ export default function RoomPage() {
   const router = useRouter();
   const params = useParams();
   const roomId = params.id as string;
-  const { username, hydrate } = useUserStore();
+  const user = useUserStore((s) => s.user);
+  const hydrate = useUserStore((s) => s.hydrate);
+  const username = user?.username ?? "";
 
   const [hydrated, setHydrated] = useState(false);
 
@@ -25,7 +27,7 @@ export default function RoomPage() {
     queueMicrotask(() => setHydrated(true));
   }, [hydrate]);
 
-  const session = useRoomSession({ roomId, username: username ?? "", hydrated, router });
+  const session = useRoomSession({ roomId, user, hydrated, router });
 
   const {
     partnerName,

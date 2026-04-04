@@ -1,8 +1,13 @@
+export interface RoomParticipant {
+  id: string;
+  username: string;
+}
+
 export interface RoomInfo {
   id: string;
   name: string;
   userCount: number;
-  users: string[];
+  users: RoomParticipant[];
 }
 
 export interface ReadyToCallPayload {

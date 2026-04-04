@@ -6,7 +6,10 @@ import { useUserStore } from "@/store/useUserStore";
 
 export default function LoginPage() {
   const router = useRouter();
-  const { username, setUsername, hydrate } = useUserStore();
+  const user = useUserStore((s) => s.user);
+  const setUsername = useUserStore((s) => s.setUsername);
+  const hydrate = useUserStore((s) => s.hydrate);
+  const username = user?.username ?? "";
   const [name, setName] = useState("");
   const [hydrated, setHydrated] = useState(false);
 

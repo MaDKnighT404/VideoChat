@@ -10,16 +10,17 @@ import { useVideoFrameSender } from "@/hooks/room/useVideoFrameSender";
 import { useRoomAudioCaptureSender } from "@/hooks/room/useRoomAudioCaptureSender";
 import { useRoomSocketLifecycle } from "@/hooks/room/useRoomSocketLifecycle";
 import type { RoomSessionRouter } from "@/hooks/room/types";
+import type { StoredUser } from "@/store/useUserStore";
 
 interface UseRoomSessionArgs {
   roomId: string;
-  username: string;
+  user: StoredUser | null;
   hydrated: boolean;
   router: RoomSessionRouter;
 }
 
-export function useRoomSession({ roomId, username, hydrated, router }: UseRoomSessionArgs) {
-  useRedirectWhenNoUsername(hydrated, username, router);
+export function useRoomSession({ roomId, user, hydrated, router }: UseRoomSessionArgs) {
+  useRedirectWhenNoUsername(hydrated, user, router);
 
   const [partnerName, setPartnerName] = useState("");
   const [connected, setConnected] = useState(false);
@@ -62,7 +63,7 @@ export function useRoomSession({ roomId, username, hydrated, router }: UseRoomSe
 
   useRoomSocketLifecycle({
     roomId,
-    username,
+    user,
     hydrated,
     local: {
       localVideoRef,

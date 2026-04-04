@@ -6,6 +6,20 @@ interface RoomCardProps {
   onJoin: (roomId: string) => void;
 }
 
+function ParticipantNames({ users }: { users: RoomInfo["users"] }) {
+  if (users.length === 0) return null;
+  return (
+    <span className="text-slate-300">
+      {users.map((u, i) => (
+        <span key={u.id}>
+          {i > 0 && (users.length === 2 && i === 1 ? " и " : ", ")}
+          {u.username}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 export function RoomCard({ room, onJoin }: RoomCardProps) {
   const status = getRoomStatusLabel(room.userCount);
   const isFull = room.userCount >= 2;
@@ -22,17 +36,9 @@ export function RoomCard({ room, onJoin }: RoomCardProps) {
 
       <div className="mb-6 text-sm text-slate-400">
         {room.userCount === 0 && "Нет участников"}
-        {room.userCount === 1 && (
+        {room.userCount >= 1 && (
           <span>
-            В комнате: <span className="text-slate-300">{room.users[0]}</span>
-          </span>
-        )}
-        {room.userCount === 2 && (
-          <span>
-            В комнате:{" "}
-            <span className="text-slate-300">
-              {room.users[0]} и {room.users[1]}
-            </span>
+            В комнате: <ParticipantNames users={room.users} />
           </span>
         )}
       </div>

@@ -11,6 +11,7 @@ const handle = app.getRequestHandler();
 interface RoomUser {
   socketId: string;
   username: string;
+  userId: string;
 }
 
 interface Room {
@@ -30,7 +31,7 @@ function getRoomsSummary() {
     id: r.id,
     name: r.name,
     userCount: r.users.length,
-    users: r.users.map((u) => u.username),
+    users: r.users.map((u) => ({ id: u.userId, username: u.username })),
   }));
 }
 
@@ -66,8 +67,19 @@ app.prepare().then(() => {
 
     socket.on(
       "join-room",
-      ({ roomId, username }: { roomId: string; username: string }) => {
-        console.log(`[join-room] ${username} (${socket.id}) → room ${roomId}`);
+      ({
+        roomId,
+        username,
+        userId,
+      }: {
+        roomId: string;
+        username: string;
+        userId: string;
+      }) => {
+        if (!userId || !username) return;
+        console.log(
+          `[join-room] ${username} (${userId}) (${socket.id}) → room ${roomId}`,
+        );
         const room = rooms.find((r) => r.id === roomId);
         if (!room) return;
         if (room.users.length >= 2) {
@@ -77,7 +89,7 @@ app.prepare().then(() => {
         if (room.users.some((u) => u.socketId === socket.id)) return;
 
         removeUserFromAllRooms(socket.id, io);
-        room.users.push({ socketId: socket.id, username });
+        room.users.push({ socketId: socket.id, username, userId });
         socket.join(`room-${roomId}`);
 
         io.emit("rooms-update", getRoomsSummary());

@@ -4,6 +4,7 @@ import { useEffect, useRef, type MutableRefObject, type RefObject } from "react"
 import { getSocket } from "@/lib/socket";
 import { acquireRoomMediaStream } from "@/lib/media/acquireRoomMediaStream";
 import type { ReadyToCallPayload } from "@/types/videochat";
+import type { StoredUser } from "@/store/useUserStore";
 import type { Socket } from "socket.io-client";
 
 interface LocalMediaApi {
@@ -24,7 +25,7 @@ interface RemotePlaybackApi {
 
 interface UseRoomSocketLifecycleArgs {
   roomId: string;
-  username: string;
+  user: StoredUser | null;
   hydrated: boolean;
   local: LocalMediaApi;
   startVideoSending: (socket: Socket) => void;
@@ -43,7 +44,7 @@ interface UseRoomSocketLifecycleArgs {
 
 export function useRoomSocketLifecycle({
   roomId,
-  username,
+  user,
   hydrated,
   local,
   startVideoSending,
@@ -62,7 +63,8 @@ export function useRoomSocketLifecycle({
   const initRef = useRef(false);
 
   useEffect(() => {
-    if (!hydrated || !username || initRef.current) return;
+    if (!hydrated || !user?.username || !user?.id || initRef.current) return;
+    const me = user;
     initRef.current = true;
 
     const socket = getSocket();
@@ -105,7 +107,11 @@ export function useRoomSocketLifecycle({
         stopAudioSending();
       });
 
-      socket.emit("join-room", { roomId, username });
+      socket.emit("join-room", {
+        roomId,
+        username: me.username,
+        userId: me.id,
+      });
       console.log("[Signal] Emitted join-room for", roomId);
     }
 
@@ -121,5 +127,5 @@ export function useRoomSocketLifecycle({
       cleanupSession();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, username, roomId]);
+  }, [hydrated, user, roomId]);
 }
