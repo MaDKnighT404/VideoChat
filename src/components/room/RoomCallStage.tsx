@@ -53,7 +53,7 @@ export function RoomCallStage({
 
       {remoteUiOpen && (
         <>
-          <DeviceSelectorsPanel partnerName={partnerName}>{deviceSelectors}</DeviceSelectorsPanel>
+          <DeviceSelectorsPanel>{deviceSelectors}</DeviceSelectorsPanel>
           <CallControlsPanel>{callControls}</CallControlsPanel>
         </>
       )}

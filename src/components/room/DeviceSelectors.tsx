@@ -52,22 +52,13 @@ export function DeviceSelectors({
 }
 
 /** Обертка для панели над/под видео в звонке (stopPropagation). */
-export function DeviceSelectorsPanel({
-  partnerName,
-  children,
-}: {
-  partnerName: string;
-  children: ReactNode;
-}) {
+export function DeviceSelectorsPanel({ children }: { children: ReactNode }) {
   return (
     <div
       className="absolute left-0 right-0 top-0 z-20 border-b border-white/10 bg-black/55 px-4 py-3 backdrop-blur-md"
       onClick={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
-      {partnerName && (
-        <p className="mb-2 text-center text-xs text-slate-300">Собеседник: {partnerName}</p>
-      )}
       {children}
     </div>
   );
