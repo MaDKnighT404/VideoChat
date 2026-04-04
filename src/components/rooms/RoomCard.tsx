@@ -5,6 +5,7 @@ import { CATEGORY_VISUAL } from "@/lib/categoryRoomStyle";
 interface RoomCardProps {
   room: RoomInfo;
   onJoin: (roomId: string) => void;
+  disabled?: boolean;
 }
 
 function ParticipantNames({ users, max }: { users: RoomInfo["users"]; max: number }) {
@@ -24,10 +25,11 @@ function ParticipantNames({ users, max }: { users: RoomInfo["users"]; max: numbe
   );
 }
 
-export function RoomCard({ room, onJoin }: RoomCardProps) {
+export function RoomCard({ room, onJoin, disabled }: RoomCardProps) {
   const v = CATEGORY_VISUAL[room.category];
   const status = getRoomStatusLabel(room.userCount, room.maxUsers);
   const isFull = room.userCount >= room.maxUsers;
+  const cantJoin = isFull || disabled;
   const fillPercent = room.maxUsers > 0 ? (room.userCount / room.maxUsers) * 100 : 0;
 
   return (
@@ -67,10 +69,10 @@ export function RoomCard({ room, onJoin }: RoomCardProps) {
       <button
         type="button"
         onClick={() => onJoin(room.id)}
-        disabled={isFull}
+        disabled={cantJoin}
         className={`mt-4 w-full rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition-all disabled:cursor-not-allowed disabled:opacity-30 ${v.btn} ${v.btnHover}`}
       >
-        {isFull ? "Комната занята" : "Присоединиться"}
+        {isFull ? "Комната занята" : disabled ? "Дайте разрешение" : "Присоединиться"}
       </button>
     </div>
   );

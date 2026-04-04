@@ -14,18 +14,28 @@ import { CATEGORY_VISUAL } from "@/lib/categoryRoomStyle";
 import { DeviceSelectors } from "@/components/room/DeviceSelectors";
 import { useDeviceEnumerator } from "@/hooks/useDeviceEnumerator";
 
+/** Сколько карточек комнат показывать в каждой категории на главной. */
+const MAX_ROOMS_PER_CATEGORY = 2;
+
 export default function RoomsPage() {
   const router = useRouter();
   const user = useUserStore((s) => s.user);
   const logout = useUserStore((s) => s.logout);
   const hydrate = useUserStore((s) => s.hydrate);
   const username = user?.username ?? "";
-  const [rooms, setRooms] = useState<RoomInfo[]>([]);
+  const [rooms, setRooms] = useState<RoomInfo[] | null>(null);
   const [hydrated, setHydrated] = useState(false);
 
   const {
-    cameras, mics, camId, micId, switchDevice, permitted, requestPermission,
-    videoQuality, setVideoQuality,
+    cameras,
+    mics,
+    camId,
+    micId,
+    switchDevice,
+    permitted,
+    requestPermission,
+    videoQuality,
+    setVideoQuality,
   } = useDeviceEnumerator();
 
   useEffect(() => {
@@ -58,7 +68,8 @@ export default function RoomsPage() {
   }, [user?.id, username]);
 
   const handleJoin = (roomId: string) => {
-    const room = rooms.find((r) => r.id === roomId);
+    if (!permitted) return;
+    const room = rooms?.find((r) => r.id === roomId);
     if (room && room.userCount >= room.maxUsers) return;
     router.push(`/room/${roomId}`);
   };
@@ -73,6 +84,8 @@ export default function RoomsPage() {
   if (!hydrated || !username) {
     return <LoadingScreen />;
   }
+
+  const loading = rooms === null;
 
   return (
     <div className="flex flex-1 flex-col">
@@ -109,24 +122,30 @@ export default function RoomsPage() {
         </div>
       </div>
 
-      <main className="mx-auto flex w-full max-w-6xl flex-col px-6 py-10 pb-16">
-        {CATEGORY_ORDER.map((cat) => {
-          const catRooms = rooms.filter((r) => r.category === cat);
-          if (catRooms.length === 0) return null;
+      {loading ? (
+        <LoadingScreen />
+      ) : (
+        <main className="mx-auto flex w-full max-w-6xl flex-col px-6 py-10 pb-16">
+          {CATEGORY_ORDER.map((cat) => {
+            const catRooms = rooms
+              .filter((r) => r.category === cat)
+              .slice(0, MAX_ROOMS_PER_CATEGORY);
+            if (catRooms.length === 0) return null;
 
-          const catStyle = CATEGORY_VISUAL[cat];
-          return (
-            <section key={cat} className={`mb-10 last:mb-0 ${catStyle.sectionWrap}`}>
-              <CategorySectionHeader category={cat} />
-              <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-                {catRooms.map((room) => (
-                  <RoomCard key={room.id} room={room} onJoin={handleJoin} />
-                ))}
-              </div>
-            </section>
-          );
-        })}
-      </main>
+            const catStyle = CATEGORY_VISUAL[cat];
+            return (
+              <section key={cat} className={`mb-10 last:mb-0 ${catStyle.sectionWrap}`}>
+                <CategorySectionHeader category={cat} />
+                <div className="grid gap-6 sm:grid-cols-2">
+                  {catRooms.map((room) => (
+                    <RoomCard key={room.id} room={room} onJoin={handleJoin} disabled={!permitted} />
+                  ))}
+                </div>
+              </section>
+            );
+          })}
+        </main>
+      )}
     </div>
   );
 }

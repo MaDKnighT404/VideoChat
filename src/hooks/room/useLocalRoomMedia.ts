@@ -87,7 +87,7 @@ export function useLocalRoomMedia(inCall: boolean) {
   }, []);
 
   useEffect(() => {
-    if (!inCall && localDisplayRef.current && localStreamRef.current) {
+    if (localDisplayRef.current && localStreamRef.current) {
       localDisplayRef.current.srcObject = localStreamRef.current;
     }
   }, [inCall]);

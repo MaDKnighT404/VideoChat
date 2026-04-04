@@ -93,6 +93,7 @@ export default function RoomPage() {
             remoteUiOpen={remoteUiOpen}
             onToggleRemoteUi={() => setRemoteUiOpen((o) => !o)}
             remoteImgRef={remoteImgRef}
+            localDisplayRef={localDisplayRef}
             callControls={callControls}
           />
         );

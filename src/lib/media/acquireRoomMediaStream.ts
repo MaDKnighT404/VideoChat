@@ -8,7 +8,7 @@ export async function acquireRoomMediaStream(
 ): Promise<MediaStream> {
   if (audioOnly) {
     const audioC: MediaTrackConstraints | boolean = micId
-      ? { deviceId: { exact: micId } }
+      ? { deviceId: { ideal: micId } }
       : true;
     try {
       return await navigator.mediaDevices.getUserMedia({ video: false, audio: audioC });
@@ -23,9 +23,9 @@ export async function acquireRoomMediaStream(
     width: { ideal: preset.captureWidth },
     height: { ideal: preset.captureHeight },
   };
-  if (camId) videoC.deviceId = { exact: camId };
+  if (camId) videoC.deviceId = { ideal: camId };
 
-  const audioC: MediaTrackConstraints | boolean = micId ? { deviceId: { exact: micId } } : true;
+  const audioC: MediaTrackConstraints | boolean = micId ? { deviceId: { ideal: micId } } : true;
 
   try {
     return await navigator.mediaDevices.getUserMedia({ video: videoC, audio: audioC });

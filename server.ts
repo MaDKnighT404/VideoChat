@@ -27,13 +27,10 @@ interface Room {
 const rooms: Room[] = [
   { id: "1", name: "Комната 1", category: "video-audio", maxUsers: 2, users: [] },
   { id: "2", name: "Комната 2", category: "video-audio", maxUsers: 2, users: [] },
-  { id: "3", name: "Комната 3", category: "video-audio", maxUsers: 2, users: [] },
   { id: "4", name: "Комната 4", category: "audio-only", maxUsers: 2, users: [] },
   { id: "5", name: "Комната 5", category: "audio-only", maxUsers: 2, users: [] },
-  { id: "6", name: "Комната 6", category: "audio-only", maxUsers: 2, users: [] },
   { id: "7", name: "Группа 1", category: "group-audio", maxUsers: 10, users: [] },
   { id: "8", name: "Группа 2", category: "group-audio", maxUsers: 10, users: [] },
-  { id: "9", name: "Группа 3", category: "group-audio", maxUsers: 10, users: [] },
 ];
 
 function getRoomsSummary() {

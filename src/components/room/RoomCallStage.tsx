@@ -10,6 +10,7 @@ interface RoomCallStageProps {
   remoteUiOpen: boolean;
   onToggleRemoteUi: () => void;
   remoteImgRef: RefObject<HTMLImageElement | null>;
+  localDisplayRef: RefObject<HTMLVideoElement | null>;
   callControls: ReactNode;
 }
 
@@ -20,6 +21,7 @@ export function RoomCallStage({
   remoteUiOpen,
   onToggleRemoteUi,
   remoteImgRef,
+  localDisplayRef,
   callControls,
 }: RoomCallStageProps) {
   return (
@@ -48,6 +50,14 @@ export function RoomCallStage({
           </div>
         )}
       </div>
+
+      <video
+        ref={localDisplayRef}
+        autoPlay
+        playsInline
+        muted
+        className="pointer-events-none absolute bottom-20 right-4 z-30 aspect-video w-44 rounded-xl border-2 border-white/20 bg-black object-cover shadow-lg sm:w-56"
+      />
 
       {remoteUiOpen && (
         <CallControlsPanel>{callControls}</CallControlsPanel>
