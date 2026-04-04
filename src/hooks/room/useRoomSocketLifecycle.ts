@@ -3,6 +3,7 @@
 import { useEffect, useRef, type MutableRefObject, type RefObject } from "react";
 import { getSocket } from "@/lib/socket";
 import { acquireRoomMediaStream } from "@/lib/media/acquireRoomMediaStream";
+import { ensureMediaPermissions } from "@/lib/media/checkMediaPermissions";
 import { reconcileDeviceStoreWithDevices } from "@/lib/reconcileDeviceIds";
 import { useDeviceStore } from "@/store/useDeviceStore";
 import type {
@@ -98,6 +99,7 @@ export function useRoomSocketLifecycle({
       const isGroupRoom = category === "group-audio";
       const audioOnly = !isVideoRoom;
 
+      await ensureMediaPermissions();
       const devs = await navigator.mediaDevices.enumerateDevices();
       reconcileDeviceStoreWithDevices(devs);
       const prefs = useDeviceStore.getState();

@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useDeviceStore } from "@/store/useDeviceStore";
 import type { VideoQuality } from "@/constants/media";
 import { reconcileDeviceStoreWithDevices } from "@/lib/reconcileDeviceIds";
+import { ensureMediaPermissions } from "@/lib/media/checkMediaPermissions";
 
 export function useDeviceEnumerator() {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
@@ -30,17 +31,8 @@ export function useDeviceEnumerator() {
   }, []);
 
   const requestPermission = useCallback(async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-      stream.getTracks().forEach((t) => t.stop());
-    } catch {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        stream.getTracks().forEach((t) => t.stop());
-      } catch {
-        return;
-      }
-    }
+    const ok = await ensureMediaPermissions();
+    if (!ok) return;
 
     const devs = await navigator.mediaDevices.enumerateDevices();
     reconcileDeviceStoreWithDevices(devs);

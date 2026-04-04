@@ -97,13 +97,24 @@ export function useRemoteRoomPlayback(remoteImgRef: RefObject<HTMLImageElement |
 
   useEffect(() => {
     const resume = () => {
-      playCtxRef.current?.resume().catch(() => {});
+      const ctx = playCtxRef.current;
+      if (!ctx) return;
+      if (ctx.state === "suspended") {
+        ctx.resume().catch(() => {});
+      }
+      if (ctx.state === "running") {
+        document.removeEventListener("click", resume);
+        document.removeEventListener("touchstart", resume);
+        document.removeEventListener("keydown", resume);
+      }
     };
-    document.addEventListener("click", resume, { once: true });
-    document.addEventListener("touchstart", resume, { once: true });
+    document.addEventListener("click", resume);
+    document.addEventListener("touchstart", resume);
+    document.addEventListener("keydown", resume);
     return () => {
       document.removeEventListener("click", resume);
       document.removeEventListener("touchstart", resume);
+      document.removeEventListener("keydown", resume);
     };
   }, []);
 

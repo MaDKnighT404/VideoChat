@@ -6,10 +6,11 @@ export async function acquireRoomMediaStream(
   audioOnly?: boolean,
   quality?: VideoQuality,
 ): Promise<MediaStream> {
+  const audioC: MediaTrackConstraints | boolean = micId
+    ? { deviceId: { ideal: micId } }
+    : true;
+
   if (audioOnly) {
-    const audioC: MediaTrackConstraints | boolean = micId
-      ? { deviceId: { ideal: micId } }
-      : true;
     try {
       return await navigator.mediaDevices.getUserMedia({ video: false, audio: audioC });
     } catch {
@@ -25,15 +26,26 @@ export async function acquireRoomMediaStream(
   };
   if (camId) videoC.deviceId = { ideal: camId };
 
-  const audioC: MediaTrackConstraints | boolean = micId ? { deviceId: { ideal: micId } } : true;
-
+  // 1. video + audio
   try {
     return await navigator.mediaDevices.getUserMedia({ video: videoC, audio: audioC });
-  } catch {
+  } catch { /* camera or mic unavailable, try narrower requests */ }
+
+  // 2. video only (no mic)
+  try {
+    const videoOnly = await navigator.mediaDevices.getUserMedia({ video: videoC, audio: false });
+    // also try to grab audio separately and merge
     try {
-      return await navigator.mediaDevices.getUserMedia({ video: videoC, audio: false });
-    } catch {
-      return new MediaStream();
-    }
-  }
+      const audioOnly = await navigator.mediaDevices.getUserMedia({ video: false, audio: audioC });
+      for (const t of audioOnly.getAudioTracks()) videoOnly.addTrack(t);
+    } catch { /* no mic available */ }
+    return videoOnly;
+  } catch { /* no camera at all */ }
+
+  // 3. audio only (no camera at all)
+  try {
+    return await navigator.mediaDevices.getUserMedia({ video: false, audio: audioC });
+  } catch { /* nothing available */ }
+
+  return new MediaStream();
 }
