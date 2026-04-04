@@ -3,13 +3,11 @@ import type { ReactNode } from "react";
 interface AudioCallStageProps {
   partnerName: string;
   callControls: ReactNode;
-  deviceSelectors: ReactNode;
 }
 
 export function AudioCallStage({
   partnerName,
   callControls,
-  deviceSelectors,
 }: AudioCallStageProps) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-8 p-6">
@@ -23,7 +21,6 @@ export function AudioCallStage({
           Аудиозвонок
         </span>
       </div>
-      <div className="w-full max-w-md">{deviceSelectors}</div>
       {callControls}
     </div>
   );

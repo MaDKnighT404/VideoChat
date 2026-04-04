@@ -1,7 +1,7 @@
 import type { RefObject } from "react";
 import type { ReactNode } from "react";
 import { RemoteWaitingPlaceholder } from "./RemoteWaitingPlaceholder";
-import { CallControlsPanel, DeviceSelectorsPanel } from "./DeviceSelectors";
+import { CallControlsPanel } from "./DeviceSelectors";
 
 interface RoomCallStageProps {
   partnerName: string;
@@ -10,7 +10,6 @@ interface RoomCallStageProps {
   remoteUiOpen: boolean;
   onToggleRemoteUi: () => void;
   remoteImgRef: RefObject<HTMLImageElement | null>;
-  deviceSelectors: ReactNode;
   callControls: ReactNode;
 }
 
@@ -21,7 +20,6 @@ export function RoomCallStage({
   remoteUiOpen,
   onToggleRemoteUi,
   remoteImgRef,
-  deviceSelectors,
   callControls,
 }: RoomCallStageProps) {
   return (
@@ -52,10 +50,7 @@ export function RoomCallStage({
       </div>
 
       {remoteUiOpen && (
-        <>
-          <DeviceSelectorsPanel>{deviceSelectors}</DeviceSelectorsPanel>
-          <CallControlsPanel>{callControls}</CallControlsPanel>
-        </>
+        <CallControlsPanel>{callControls}</CallControlsPanel>
       )}
     </>
   );

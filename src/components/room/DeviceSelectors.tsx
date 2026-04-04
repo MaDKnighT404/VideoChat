@@ -79,18 +79,6 @@ export function DeviceSelectors({
   );
 }
 
-export function DeviceSelectorsPanel({ children }: { children: ReactNode }) {
-  return (
-    <div
-      className="absolute left-0 right-0 top-0 z-20 border-b border-white/10 bg-black/55 px-4 py-3 backdrop-blur-md"
-      onClick={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
-      {children}
-    </div>
-  );
-}
-
 export function CallControlsPanel({ children }: { children: ReactNode }) {
   return (
     <div

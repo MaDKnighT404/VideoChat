@@ -6,7 +6,6 @@ interface GroupAudioStageProps {
   participants: RoomParticipant[];
   waiting: boolean;
   callControls: ReactNode;
-  deviceSelectors: ReactNode;
 }
 
 export function GroupAudioStage({
@@ -14,7 +13,6 @@ export function GroupAudioStage({
   participants,
   waiting,
   callControls,
-  deviceSelectors,
 }: GroupAudioStageProps) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-8 p-6">

@@ -6,7 +6,6 @@ import { useUserStore } from "@/store/useUserStore";
 import { useRoomSession } from "@/hooks/useRoomSession";
 import { LoadingScreen } from "@/components/LoadingScreen";
 import { RoomHeader } from "@/components/room/RoomHeader";
-import { DeviceSelectors } from "@/components/room/DeviceSelectors";
 import { CallControls } from "@/components/room/CallControls";
 import { HiddenCaptureVideo } from "@/components/room/HiddenCaptureVideo";
 import { RoomLobby } from "@/components/room/RoomLobby";
@@ -44,17 +43,10 @@ export default function RoomPage() {
     remoteUiOpen,
     setRemoteUiOpen,
     participants,
-    cameras,
-    mics,
-    selCam,
-    selMic,
     inCall,
     localVideoRef,
     localDisplayRef,
     remoteImgRef,
-    switchDevice,
-    switchQuality,
-    videoQuality,
     handleLeave,
     toggleMic,
     toggleCam,
@@ -67,19 +59,6 @@ export default function RoomPage() {
   if (!category) {
     return <LoadingScreen />;
   }
-
-  const deviceSelectors = (
-    <DeviceSelectors
-      cameras={cameras}
-      mics={mics}
-      selCam={selCam}
-      selMic={selMic}
-      onSwitch={switchDevice}
-      showCamera={hasVideo}
-      videoQuality={hasVideo ? videoQuality : undefined}
-      onQualityChange={hasVideo ? switchQuality : undefined}
-    />
-  );
 
   const callControls = (
     <CallControls
@@ -100,7 +79,6 @@ export default function RoomPage() {
           participants={participants}
           waiting={waiting}
           callControls={callControls}
-          deviceSelectors={deviceSelectors}
         />
       );
     }
@@ -115,7 +93,6 @@ export default function RoomPage() {
             remoteUiOpen={remoteUiOpen}
             onToggleRemoteUi={() => setRemoteUiOpen((o) => !o)}
             remoteImgRef={remoteImgRef}
-            deviceSelectors={deviceSelectors}
             callControls={callControls}
           />
         );
@@ -124,7 +101,6 @@ export default function RoomPage() {
         <AudioCallStage
           partnerName={partnerName}
           callControls={callControls}
-          deviceSelectors={deviceSelectors}
         />
       );
     }
