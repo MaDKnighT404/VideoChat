@@ -17,17 +17,30 @@ export function useRemoteRoomPlayback(remoteImgRef: RefObject<HTMLImageElement |
   }, []);
 
   const handleVideoFrame = useCallback(
-    (frame: ArrayBuffer) => {
-      const blob = new Blob([frame], { type: "image/jpeg" });
+    (frame: ArrayBuffer | Uint8Array) => {
+      let bytes: Uint8Array;
+      if (frame instanceof ArrayBuffer) {
+        bytes = new Uint8Array(frame);
+      } else {
+        bytes = new Uint8Array((frame as Uint8Array).buffer.slice(
+          (frame as Uint8Array).byteOffset,
+          (frame as Uint8Array).byteOffset + (frame as Uint8Array).byteLength,
+        ));
+      }
+      const blob = new Blob([bytes.buffer as ArrayBuffer], { type: "image/jpeg" });
       const url = URL.createObjectURL(blob);
       const img = remoteImgRef.current;
       if (img) {
+        const prev = prevBlobUrlRef.current;
+        prevBlobUrlRef.current = url;
+        img.onload = () => {
+          if (prev) URL.revokeObjectURL(prev);
+        };
         img.src = url;
+      } else {
+        if (prevBlobUrlRef.current) URL.revokeObjectURL(prevBlobUrlRef.current);
+        prevBlobUrlRef.current = url;
       }
-      if (prevBlobUrlRef.current) {
-        URL.revokeObjectURL(prevBlobUrlRef.current);
-      }
-      prevBlobUrlRef.current = url;
       setHasRemoteFrame(true);
     },
     [remoteImgRef]

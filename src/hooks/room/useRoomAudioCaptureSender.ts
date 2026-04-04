@@ -4,6 +4,20 @@ import { useRef, useCallback, useMemo, type RefObject } from "react";
 import { AUDIO_BUF_SIZE } from "@/constants/media";
 import type { Socket } from "socket.io-client";
 
+const SILENCE_THRESHOLD = 150;
+const TARGET_SAMPLE_RATE = 16000;
+
+function downsample(input: Float32Array, srcRate: number, dstRate: number): Float32Array {
+  if (srcRate === dstRate) return input;
+  const ratio = srcRate / dstRate;
+  const len = Math.round(input.length / ratio);
+  const out = new Float32Array(len);
+  for (let i = 0; i < len; i++) {
+    out[i] = input[Math.round(i * ratio)];
+  }
+  return out;
+}
+
 export function useRoomAudioCaptureSender(
   roomId: string,
   localStreamRef: RefObject<MediaStream | null>
@@ -52,22 +66,30 @@ export function useRoomAudioCaptureSender(
       processor.connect(silentGain);
       silentGain.connect(actx.destination);
 
-      const sr = actx.sampleRate;
+      const nativeSr = actx.sampleRate;
+      const sendSr = Math.min(nativeSr, TARGET_SAMPLE_RATE);
 
       processor.onaudioprocess = (e) => {
-        const input = e.inputBuffer.getChannelData(0);
-        const int16 = new Int16Array(input.length);
-        for (let i = 0; i < input.length; i++) {
-          const s = Math.max(-1, Math.min(1, input[i]));
+        const raw = e.inputBuffer.getChannelData(0);
+
+        let sumSq = 0;
+        for (let i = 0; i < raw.length; i++) sumSq += raw[i] * raw[i];
+        const rms = Math.sqrt(sumSq / raw.length) * 32768;
+        if (rms < SILENCE_THRESHOLD) return;
+
+        const samples = downsample(raw, nativeSr, sendSr);
+        const int16 = new Int16Array(samples.length);
+        for (let i = 0; i < samples.length; i++) {
+          const s = Math.max(-1, Math.min(1, samples[i]));
           int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
         }
         socket.emit("audio-data", {
           roomId,
           audio: int16.buffer,
-          sampleRate: sr,
+          sampleRate: sendSr,
         });
       };
-      console.log("[Audio] Sending started, sampleRate:", sr);
+      console.log("[Audio] Sending started, native:", nativeSr, "→ send:", sendSr);
     },
     [roomId, localStreamRef, stop]
   );
